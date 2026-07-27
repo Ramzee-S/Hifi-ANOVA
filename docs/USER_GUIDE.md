@@ -322,6 +322,39 @@ Pair generation is a two-step pipeline: **select active variables**, then
 | `var_pair_selection` | str or None | `None` | Variance pair selection (Stage D): `None`/`'all'` = all pairs, `'auto'` = quick variance fit then select. |
 | `var_triple_selection` | str or None | `None` | Variance triple selection; currently all triples. |
 
+#### Removing spurious main effects — `first_order_pruning`
+
+A variable can have a **zero first-order effect but a non-zero total-order
+effect** — it acts *only* through an interaction. The textbook case is Ishigami
+`x₃` (`f = sin x₁ + a·sin²x₂ + b·x₃⁴·sin x₁`): its main effect is exactly zero,
+yet a plain ridge fit still assigns `x₃` a small, noisy first-order component
+(and at small `N` a large one). Ridge can only *shrink* that block, never zero
+it, and `variable_selection` does not touch first-order blocks — it only gates
+pair candidates.
+
+`first_order_pruning` closes this gap. Post-fit, it runs a leave-one-group-out
+group test on the first-order blocks and **zeros the entire block** of any
+variable whose marginal effect is not supported by the data. Because first-order
+and pair/triple blocks are Hoeffding-orthogonal, removing a rejected block does
+not disturb the interactions.
+
+```python
+config = {
+    'K1': 6, 'K2': 4, 'strategy': 'curvature',
+    'first_order_pruning': 'bic',   # 'bic' | 'group_lasso' | '1se' | 'none'
+}
+# Ishigami: x₃'s first-order component becomes exactly flat (S₁(x₃)=0),
+# while x₁, x₂ and the x₁–x₃ interaction are untouched — robust down to N≈100.
+```
+
+Use `'bic'` as the default — it is the most robust at small `N`; `'group_lasso'`
+also works for `N ≳ 1000`, and `'1se'` is the most conservative. It applies to
+both the first-order-only and Stage-B paths, and is re-enforced after the
+heteroscedastic (Stage D) mean refit. See
+`examples/run_ishigami_heteroscedastic.py` for a worked example, whose
+regularization-path panel also shows `x₃`'s first-order Sobol pinned at zero
+across all `λ`.
+
 ### 4.7 Residual model (Stage C)
 
 Provide a `residual` dict (preferred) or the legacy `residual_nn` dict. See

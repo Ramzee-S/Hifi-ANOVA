@@ -38,7 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   showcase on a heteroscedastic Ishigami: recovers the analytic mean Sobol
   indices, fits the variance spectrum (x3 emerges as a hidden driver),
   rediscovers the x1–x3 interaction with the residual sieve, checks calibration,
-  bootstraps CIs for the dual spectrum, and renders the ellipse plots.
+  bootstraps CIs for the dual spectrum, and renders the ellipse plots. It also
+  prints the explained-variance split of the mean vs the variance model and
+  renders the regularization path (L-curve, GCV/evidence, Sobol-vs-λ, and the
+  variance-decomposition trade-off) via `compute_reg_path` / `plot_reg_path`.
 - **`docs/CI_theory.md`** — theory note for the Sobol confidence intervals: the
   HC0 sandwich estimator, the delta method, the full-gradient derivation
   (including the denominator-coupling terms), why the own-block-only shortcut

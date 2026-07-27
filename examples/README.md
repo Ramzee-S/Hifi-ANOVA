@@ -15,7 +15,11 @@ python examples/run_salib_comparison.py         # SALib ground-truth check
 indices are known), recovers them, rediscovers the x1–x3 interaction with the
 residual sieve, checks calibration, and renders the **dual-sensitivity ellipse**
 plots — a compact view where each variable's mean sensitivity and variance
-sensitivity are read off the shape/position of one ellipse.
+sensitivity are read off the shape/position of one ellipse. It also uses
+`first_order_pruning='bic'` to zero x3's spurious first-order component (x3 is
+pure interaction), reports the **explained-variance split** of the mean vs the
+variance model, and renders the **regularization path** (L-curve, GCV/evidence
+selection, Sobol-vs-λ, and the variance-decomposition trade-off).
 
 `run_salib_comparison.py` needs the optional SALib dependency:
 

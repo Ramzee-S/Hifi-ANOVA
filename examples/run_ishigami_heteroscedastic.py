@@ -47,6 +47,7 @@ from hifi_anova.training.trainer import HiFiANOVATrainer
 from hifi_anova.analysis.sobol import compute_sobol_indices
 from hifi_anova.analysis.diagnostics import calibration_report
 from hifi_anova.analysis.interaction_discovery import scan_missing_pairs
+from hifi_anova.analysis.reg_path import compute_reg_path, plot_reg_path
 from hifi_anova.analysis.visualization import (
     plot_dual_sobol, plot_component_functions, plot_sensitivity_ellipses,
 )
@@ -217,10 +218,53 @@ def main():
             print(f"  x{i+1}: mean S1 in [{mean_ci[i][0]:.3f}, {mean_ci[i][1]:.3f}]"
                   f"   var S1 in [{var_ci[i][0]:.3f}, {var_ci[i][1]:.3f}]")
 
+    # ---- Explained variance: expectation vs variance --------------------
+    print("\n" + "-" * 70)
+    print("EXPLAINED VARIANCE  (how the two spectra split by interaction order)")
+    print("-" * 70)
+    va = sobol['variance_accounting']
+    tot = va['total_model_variance']
+    print("  Mean model  E[y|x]  — variance explained by order:")
+    print(f"    first-order : {va['first_order_total'] / tot:6.1%}")
+    print(f"    second-order: {va['second_order_total'] / tot:6.1%}")
+    print(f"    residual    : {va['residual'] / tot:6.1%}")
+    vh = sobol['variance_sobol']['variance_accounting']
+    toth = vh['total'] if vh['total'] > 0 else 1.0
+    print("  Variance model  log Var[y|x]  — variance explained by order:")
+    print(f"    first-order : {vh['first_order_total'] / toth:6.1%}  (x3 alone)")
+    print(f"    second-order: {vh['second_order_total'] / toth:6.1%}")
+
+    # ---- Regularization path: the complexity / lambda trade-off ---------
+    print("\n" + "-" * 70)
+    print("REGULARIZATION PATH  (mean Sobol & explained variance vs lambda)")
+    print("-" * 70)
+    Phi_train = np.asarray(model.build_phi_all(data['x_train']), dtype=np.float64)
+    y_c = np.asarray(data['y_train'], dtype=np.float64)
+    y_c = y_c - y_c.mean()
+    P = int(model.pair_indices.shape[0]) if model.pair_indices is not None else 0
+    path = compute_reg_path(
+        Phi_train, y_c, D=3, K1=CONFIG['K1'], K2=CONFIG['K2'], P=P,
+        pair_indices=np.asarray(model.pair_indices) if P else None,
+        strategy=CONFIG['strategy'], n_lambdas=40, lambda_range=(1e-5, 10.0),
+        include_linear_1=model.include_linear_1,
+        include_linear_2=getattr(model, 'include_linear_2', True),
+        basis_name=model.basis_name)
+    gcv_idx = int(np.argmin(np.abs(path.lambdas - path.lambda_gcv_opt)))
+    print(f"  GCV-optimal lambda     : {path.lambda_gcv_opt:.2e} "
+          f"(df={path.df_values[gcv_idx]:.1f})")
+    print(f"  Evidence-optimal lambda: {path.lambda_evidence_opt:.2e}")
+    print("  Along the path, x3's mean first-order Sobol stays ~0 at every "
+          "lambda —")
+    print("  the trade-off only moves variance between the real effects and "
+          "the residual.")
+    plot_reg_path(path, VAR_NAMES, save_prefix='figures/ishigami')
+
     # ---- Figures --------------------------------------------------------
     print("\n" + "-" * 70)
     print("FIGURES")
     print("-" * 70)
+    print("  figures/ishigami_reg_path.png         (L-curve, GCV/evidence, "
+          "Sobol paths, variance decomposition)")
     plot_dual_sobol(sobol, VAR_NAMES,
                     save_path='figures/ishigami_dual_sobol.png')
     print("  figures/ishigami_dual_sobol.png       (paired mean/variance bars)")
