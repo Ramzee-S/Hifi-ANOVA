@@ -653,6 +653,14 @@ sobol['variance_sobol']['variance_accounting'] # per-order variance totals
 `first_order[i]` drives `E[y|x]`; `variance_sobol['first_order'][i]` drives
 `Var[y|x]`.
 
+**Visualizing the dual spectrum.** `hifi_anova.analysis.visualization` provides
+`plot_dual_sobol` (paired mean/variance bars) and `plot_sensitivity_ellipses` —
+a dual-sensitivity view where each variable is an ellipse whose *width* is its
+mean sensitivity and *height* its variance sensitivity (`mode='glyph'`), or a
+scatter at `(Sᶠ, Sʰ)` with CI ellipses (`mode='plane'`). A publication-styled
+`plot_sensitivity_ellipses` returning `(fig, ax)` is also in
+`hifi_anova.analysis.plots`.
+
 **Structural vs. correlative indices.** The indices above are **structural**
 (`wᵀ G w`, assuming independent inputs); they sum to 1. When `x_data` is passed,
 `compute_sobol_indices` also returns `sobol['correlative_sobol']`, computed from
@@ -798,6 +806,14 @@ per-order variance curves, `lambda_gcv_opt`, and `lambda_evidence_opt`.
 `plot_reg_path` renders the L-curve, model-selection criteria, Sobol paths, and a
 stacked variance decomposition; `plot_pareto_frontier` shows complexity vs.
 unexplained variance.
+
+For the **variance model**, `compute_variance_reg_path(model, x, y, ...)` is the
+analogue: it holds the fitted mean fixed and sweeps the variance penalty `λ_h`
+(refitting the log-variance model by Newton at each point), recording the
+variance-Sobol spectrum and total explained log-variance; `plot_variance_reg_path`
+renders it. Use the mean path (and its Pareto view) to pick `λ`, the variance
+path to pick `λ_h`, then [`verify_model`](#106-model-verification--a-one-call-health-check)
+to confirm the fitted model.
 
 ### 10.4 Interaction discovery (residual sieve)
 

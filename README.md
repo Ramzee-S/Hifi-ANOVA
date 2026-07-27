@@ -148,10 +148,17 @@ for i in range(10):
 ### Runnable examples
 
 ```bash
-python examples/run_demo.py                # 3 experiments + figures
-python examples/run_sobol_vs_prediction.py # prediction vs Sobol-estimation modes
-python examples/run_salib_comparison.py    # SALib ground-truth check (needs [salib])
+python examples/run_demo.py                     # 3 experiments + figures
+python examples/run_ishigami_heteroscedastic.py # dual mean+variance showcase (see below)
+python examples/run_sobol_vs_prediction.py      # prediction vs Sobol-estimation modes
+python examples/run_salib_comparison.py         # SALib ground-truth check (needs [salib])
 ```
+
+`run_ishigami_heteroscedastic.py` is the fullest tour: analytic Sobol recovery on
+a heteroscedastic Ishigami, the dual mean+variance spectrum with **ellipse**
+visualizations, `first_order_pruning` zeroing x3's spurious main effect, the
+regularization paths (mean, Pareto, and variance-`λ_h`), and a `verify_model`
+health check.
 
 ---
 
@@ -266,6 +273,30 @@ level, so Fourier coefficients and Sobol indices are identical with or without
 the residual. An SGD-trained NN residual is also available (`type: 'nn'`) as a
 last resort; use `hifi_anova.training.redecompose.redecompose` to recover clean Sobol
 indices afterward.
+
+### Removing spurious main effects — `first_order_pruning`
+
+```python
+config['first_order_pruning'] = 'bic'   # 'bic' | 'group_lasso' | '1se' | 'none'
+```
+
+Zeros the entire first-order block of any variable whose marginal effect the
+criterion rejects — the group-sparse step plain ridge cannot do. This cleanly
+removes a *pure-interaction* variable's spurious main effect (e.g. Ishigami x3),
+robustly down to N≈100, without disturbing the interactions (they are
+Hoeffding-orthogonal). See [USER_GUIDE §4.6](docs/USER_GUIDE.md).
+
+### Model verification — one-call health check
+
+```python
+from hifi_anova.analysis.diagnostics import verify_model
+report = verify_model(model, x_test, y_test, x_train=x_train)  # report['all_pass']
+```
+
+Runs the diagnostic workflow end-to-end (Sobol additivity, index bounds, R²,
+calibration coverage, input-correlation level) and returns a pass/warn/fail
+report, confirming a fit is internally consistent before its Sobol indices are
+trusted. See [USER_GUIDE §10.6](docs/USER_GUIDE.md).
 
 See the docstrings in `hifi_anova/api.py`, `hifi_anova/training/trainer.py`, and
 `hifi_anova/analysis/sobol.py` for the full option set.
