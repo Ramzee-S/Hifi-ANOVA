@@ -3007,3 +3007,64 @@ def plot_loo_vs_kfold(
                  fontsize=13, y=1.02)
     fig.tight_layout()
     return fig, (ax1, ax2)
+
+
+# ============================================================================
+# Parity plot (predicted vs actual)
+# ============================================================================
+
+def plot_parity(actual, predicted,
+                xlabel: str = 'Observed y',
+                ylabel: str = 'Predicted mean',
+                title: Optional[str] = None,
+                color_by=None,
+                color_label: Optional[str] = None,
+                figsize: Tuple[float, float] = (6, 6)) -> Tuple[plt.Figure, plt.Axes]:
+    """Predicted-vs-actual parity scatter with the 45-degree line and R^2.
+
+    Works for any dataset. Note that against *noisy observations* the scatter
+    cannot collapse to the line — its spread is the irreducible noise, so the R^2
+    here is bounded by the noise floor. To judge how well the *mean* is
+    recovered, pass a noiseless reference as `actual` when one is available (e.g.
+    the true function for synthetic data).
+
+    Args:
+        actual: (N,) observed targets (or a noiseless reference).
+        predicted: (N,) model mean predictions.
+        color_by: optional (N,) values to color points by (e.g. true sigma(x)).
+        color_label: colorbar label when color_by is given.
+
+    Returns (fig, ax).
+    """
+    apply_style()
+    a = np.asarray(actual, dtype=float).ravel()
+    p = np.asarray(predicted, dtype=float).ravel()
+    va = float(np.var(a))
+    r2 = 1.0 - float(np.var(a - p)) / va if va > 0 else 0.0
+
+    fig, ax = plt.subplots(figsize=figsize)
+    if color_by is not None:
+        sc = ax.scatter(a, p, s=8, alpha=0.3, c=np.asarray(color_by).ravel(),
+                        cmap='viridis')
+        cb = fig.colorbar(sc, ax=ax)
+        if color_label:
+            cb.set_label(color_label)
+    else:
+        ax.scatter(a, p, s=8, alpha=0.3, color=PALETTE['order1'])
+
+    lo = min(a.min(), p.min())
+    hi = max(a.max(), p.max())
+    pad = 0.03 * (hi - lo)
+    ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], '--',
+            color=PALETTE['residual'], lw=1.5, label='ideal (45$\\degree$)')
+    ax.set_xlim(lo - pad, hi + pad)
+    ax.set_ylim(lo - pad, hi + pad)
+    ax.set_aspect('equal')
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title or f'Predicted vs actual  ($R^2$ = {r2:.3f})')
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    return fig, ax

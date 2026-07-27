@@ -40,6 +40,7 @@ warnings.filterwarnings('ignore')
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 from hifi_anova.data.synthetic import generate_ishigami, ishigami_sobol_indices
 from hifi_anova.data.preprocessing import preprocess_data
@@ -77,6 +78,80 @@ CONFIG = {
 
 N_BOOT = 12          # bootstrap refits for the ellipse CIs (set 0 to skip)
 BOOT_SUBSAMPLE = 4000
+
+
+def _ishigami_true(X, a=7.0, b=0.1):
+    """Noiseless Ishigami response — the ground truth for the parity/surface plots."""
+    x1, x2, x3 = X[:, 0], X[:, 1], X[:, 2]
+    return np.sin(x1) + a * np.sin(x2) ** 2 + b * (x3 ** 4) * np.sin(x1)
+
+
+def fit_diagnostics(model, transformer, seed=999):
+    """Predicted-vs-actual, transparent true-vs-fit surface, and variance recovery.
+
+    Because Ishigami is synthetic we know the noiseless truth, so we can separate
+    the two things a single R^2 conflates: how well the *mean* is recovered
+    (predicted vs true f — a tight line) and the *irreducible noise* (predicted vs
+    observed y — scatter whose spread is the noise floor).
+    """
+    import jax.numpy as jnp
+    from hifi_anova.analysis.plots import plot_parity, save_fig
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+    from matplotlib.patches import Patch
+
+    def predict(Xo):
+        xj = jnp.asarray(np.clip(transformer.transform(Xo), 0, 1), dtype=jnp.float32)
+        _, v = model.predict(xj)
+        return np.asarray(model.predict_mean_only(xj)), np.sqrt(np.asarray(v))
+
+    Xe, ye, sig_e = generate_ishigami(
+        n_samples=3000, heteroscedastic=True, variance_variable=2,
+        sigma_min=0.3, sigma_max=3.0, seed=seed)
+    f_true = _ishigami_true(Xe)
+    pred, sig_pred = predict(Xe)
+
+    # (1) Parity: predicted vs observed (scatter = noise) and vs truth (clean).
+    fig, _ = plot_parity(ye, pred, xlabel='Observed y (heteroscedastic noise)',
+                         color_by=sig_e, color_label=r'true noise std $\sigma(x)$',
+                         title='Predicted vs OBSERVED  (scatter = irreducible noise)')
+    save_fig(fig, 'figures/ishigami_parity_observed.png')
+    fig, _ = plot_parity(f_true, pred, xlabel='True f(x)  (noiseless ground truth)',
+                         title='Predicted vs TRUTH  (mean recovered)')
+    save_fig(fig, 'figures/ishigami_parity_truth.png')
+
+    # (2) Transparent true-vs-fit surface (slice x3 = 0).
+    g = np.linspace(-np.pi, np.pi, 60)
+    G1, G2 = np.meshgrid(g, g)
+    grid = np.column_stack([G1.ravel(), G2.ravel(), np.zeros(G1.size)])
+    Ztrue = _ishigami_true(grid).reshape(G1.shape)
+    Zpred = predict(grid)[0].reshape(G1.shape)
+    fig = plt.figure(figsize=(8, 6.5))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.plot_surface(G1, G2, Ztrue, color='tab:blue', alpha=0.45, linewidth=0)
+    ax.plot_surface(G1, G2, Zpred, color='tab:orange', alpha=0.45, linewidth=0)
+    ax.legend(handles=[Patch(color='tab:blue', alpha=0.5, label='true f'),
+                       Patch(color='tab:orange', alpha=0.5, label='predicted mean')])
+    ax.set_xlabel('$x_1$'); ax.set_ylabel('$x_2$'); ax.set_zlabel('response')
+    ax.set_title('True vs predicted mean surface  (slice $x_3=0$)')
+    fig.savefig('figures/ishigami_surface.png', dpi=150, bbox_inches='tight')
+
+    # (3) Variance recovery: predicted std vs true noise std.
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.scatter(sig_e, sig_pred, s=8, alpha=0.3, color='steelblue')
+    lim = [min(sig_e.min(), sig_pred.min()) - 0.1,
+           max(sig_e.max(), sig_pred.max()) + 0.1]
+    ax.plot(lim, lim, 'r--', lw=1.5)
+    ax.set_xlim(lim); ax.set_ylim(lim); ax.set_aspect('equal'); ax.grid(alpha=0.3)
+    corr = float(np.corrcoef(sig_e, sig_pred)[0, 1])
+    ax.set_xlabel(r'true noise std $\sigma(x)$')
+    ax.set_ylabel(r'predicted std $\hat\sigma(x)$')
+    ax.set_title(rf'Variance recovery: $\hat\sigma$ vs $\sigma$  (corr={corr:.3f})')
+    fig.tight_layout()
+    fig.savefig('figures/ishigami_variance_fit.png', dpi=150, bbox_inches='tight')
+
+    r2_obs = 1 - np.var(ye - pred) / np.var(ye)
+    r2_true = 1 - np.var(f_true - pred) / np.var(f_true)
+    return {'r2_observed': float(r2_obs), 'r2_true': float(r2_true), 'sigma_corr': corr}
 
 
 def _fit_silent(config, xtr, ytr, xval, yval):
@@ -314,6 +389,21 @@ def main():
     plot_component_functions(model, [0, 1, 2], VAR_NAMES,
                              save_path='figures/ishigami_components.png')
     print("  figures/ishigami_components.png       (learned mean effects)")
+
+    # ---- Fit diagnostics: parity, surface, variance recovery ------------
+    fd = fit_diagnostics(model, data['transformer'])
+    print("  figures/ishigami_parity_observed.png  (pred vs observed; "
+          f"R2={fd['r2_observed']:.3f}, capped by noise)")
+    print("  figures/ishigami_parity_truth.png     (pred vs TRUE f; "
+          f"R2={fd['r2_true']:.3f})")
+    print("  figures/ishigami_surface.png          (transparent true vs fit "
+          "surface, x3=0)")
+    print("  figures/ishigami_variance_fit.png     (pred std vs true noise std; "
+          f"corr={fd['sigma_corr']:.3f})")
+    print("\n  Note: R2 vs observed (~0.8) is at the noise ceiling, not a weak "
+          "fit — R2 vs the")
+    print("  true function (~0.98) shows the mean is recovered; the gap is "
+          "irreducible noise.")
 
     print("\nDone.")
 

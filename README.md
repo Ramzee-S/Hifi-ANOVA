@@ -303,6 +303,27 @@ See the docstrings in `hifi_anova/api.py`, `hifi_anova/training/trainer.py`, and
 
 ---
 
+## Benchmark — bring your own model
+
+`benchmarks/` ships a fixed heteroscedastic-Ishigami dataset (`train.csv` /
+`test.csv` / `test_truth.csv`) and a comparison harness. Fit anything on the
+train split, predict the test inputs, and score it:
+
+```python
+from benchmarks.run_benchmark import evaluate_predictions
+evaluate_predictions(y_pred, sigma_pred=None, name='my_model')
+```
+
+It reports R² vs observed **and** vs the noiseless truth (honest generalization),
+NLL/coverage, and first-order Sobol MAE vs the analytic indices.
+`python benchmarks/run_benchmark.py --baselines` compares HiFi-ANOVA to sklearn
+baselines — the tree ensembles overfit the noise (large train→test gap) while
+HiFi-ANOVA generalizes competitively and is the only entrant with native,
+accurate Sobol indices and a calibrated input-dependent variance. See
+[`benchmarks/README.md`](benchmarks/README.md).
+
+---
+
 ## Testing
 
 ```bash

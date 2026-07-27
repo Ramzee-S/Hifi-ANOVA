@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Heteroscedastic-Ishigami benchmark** (`benchmarks/`) — a fixed, committed
+  dataset (`train.csv`, `test.csv`, `test_truth.csv`) plus a comparison harness
+  (`run_benchmark.py`). Fit any model on the train split, predict the test
+  inputs, and score with `evaluate_predictions(y_pred, sigma_pred)`: R² vs
+  observed *and* vs the noiseless truth (honest generalization), NLL/coverage,
+  and first-order Sobol MAE vs the analytic indices. `--baselines` compares
+  HiFi-ANOVA against sklearn GradientBoosting/RandomForest/MLP, showing the
+  overfitting gap and that HiFi-ANOVA is the only method with native, accurate
+  Sobol indices. Data integrity covered by `tests/test_benchmark.py`.
+- **Fit-diagnostic plots** — `analysis.plots.plot_parity` (general
+  predicted-vs-actual with the 45° line and R²), and a "Fit diagnostics" section
+  in the Ishigami example: predicted-vs-observed (scatter = noise, R²≈0.8) and
+  predicted-vs-true (R²≈0.98) parity, a transparent true-vs-fit surface, and a
+  predicted-σ vs true-σ recovery plot — making explicit how R² is read under
+  heteroscedastic noise.
 - **`verify_model` health check** — `analysis.diagnostics.verify_model` runs the
   diagnostic workflow end-to-end and returns a pass/warn/fail report (Sobol
   additivity, index bounds, test R², calibration coverage for heteroscedastic

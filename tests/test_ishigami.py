@@ -100,6 +100,15 @@ def test_plot_sensitivity_ellipses_both_modes():
     assert fig_p is not None
 
 
+def test_plot_parity_smoke():
+    from hifi_anova.analysis.plots import plot_parity
+    rng = np.random.RandomState(0)
+    actual = rng.normal(size=200)
+    predicted = actual + 0.1 * rng.normal(size=200)
+    fig, ax = plot_parity(actual, predicted, color_by=np.abs(actual))
+    assert fig is not None and ax is not None
+
+
 # ---------------------------------------------------------------------------
 # Recovery (requires fitting)
 # ---------------------------------------------------------------------------
