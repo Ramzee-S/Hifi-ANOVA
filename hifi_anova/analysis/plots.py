@@ -7,6 +7,7 @@ consistent palette, 300 DPI export.
 Usage:
     from hifi_anova.analysis.plots import (
         plot_reg_path_panel, plot_sobol_ci_bars, plot_dual_sobol,
+        plot_sensitivity_ellipses,
         plot_variance_spectrum, plot_noise_complexity, plot_components,
         plot_interaction_grid, plot_frequency_content, plot_projection_matrix,
         plot_calibration, plot_leverage, plot_residual_diagnostics,
@@ -333,6 +334,149 @@ def plot_dual_sobol(
     ax.set_ylabel('Sobol index')
     ax.set_title('Dual Sobol spectrum: mean vs variance sensitivity')
     ax.legend()
+
+    fig.tight_layout()
+    return fig, ax
+
+
+# ============================================================================
+# 3b. Dual-sensitivity ellipses (mean vs variance, per variable)
+# ============================================================================
+
+def plot_sensitivity_ellipses(
+    sobol_results: Dict,
+    variable_names: Optional[List[str]] = None,
+    mode: str = 'glyph',
+    mean_ci: Optional[Dict] = None,
+    var_ci: Optional[Dict] = None,
+    use: str = 'first_order',
+    top_k: Optional[int] = None,
+    ci_scale: float = 1.0,
+    figsize: Optional[Tuple[float, float]] = None,
+) -> Tuple[plt.Figure, plt.Axes]:
+    """Dual (mean vs variance) Sobol spectrum as one ellipse per variable.
+
+    Two views of the idea that every variable carries a *pair* of sensitivities
+    — one for the mean E[y|x], one for the variance Var[y|x]:
+
+    ``mode='glyph'`` (default) — one ellipse per variable, its **width** the
+        mean sensitivity ``S_i^f`` and its **height** the variance sensitivity
+        ``S_i^h``. Shape is the message: wide/flat = mean driver, tall/narrow =
+        variance driver, circular = balanced dual-role variable.
+
+    ``mode='plane'`` — the quantitative scatter, each variable at
+        ``(S_i^f, S_i^h)``. Bottom-right = mean drivers, top-left = hidden
+        variance drivers, top-right = dual-role. With ``mean_ci``/``var_ci``
+        (dicts ``{i: (lo, hi)}``) each marker becomes a CI ellipse, magnified by
+        ``ci_scale`` (stated in the legend) for visibility.
+
+    Returns (fig, ax), following the module convention (use ``save_fig`` to write).
+    """
+    apply_style()
+    mean_first = sobol_results['mean_sobol'][use]
+    D = len(mean_first)
+    if variable_names is None:
+        variable_names = [f"$x_{{{i+1}}}$" for i in range(D)]
+
+    has_var = 'variance_sobol' in sobol_results
+    var_first = (sobol_results['variance_sobol'][use] if has_var
+                 else {i: 0.0 for i in range(D)})
+
+    idx = sorted(range(D), key=lambda i: float(mean_first.get(i, 0))
+                 + float(var_first.get(i, 0)), reverse=True)
+    if top_k is not None:
+        idx = idx[:top_k]
+    lvl = 'first-order' if use == 'first_order' else 'total-order'
+
+    if mode == 'plane':
+        return _plot_ellipse_plane(idx, mean_first, var_first, variable_names,
+                                   mean_ci, var_ci, ci_scale, lvl, figsize)
+
+    # ---- glyph mode -------------------------------------------------------
+    vals = [max(float(mean_first.get(i, 0)), float(var_first.get(i, 0)))
+            for i in idx]
+    max_val = max(max(vals) if vals else 1.0, 1e-6)
+    radius_max = 0.42
+    scale = radius_max / max_val
+    min_semi = 0.02
+
+    fig, ax = plt.subplots(figsize=figsize or (1.7 * len(idx) + 1.5, 4.2))
+    for slot, i in enumerate(idx):
+        sf = float(mean_first.get(i, 0.0))
+        sh = float(var_first.get(i, 0.0))
+        color = _var_color(i)
+        ax.add_patch(mpl.patches.Ellipse(
+            (slot, 0), width=2 * max(scale * sf, min_semi),
+            height=2 * max(scale * sh, min_semi), facecolor=color,
+            edgecolor=color, alpha=0.45, linewidth=1.6))
+        ax.annotate(variable_names[i], (slot, -radius_max - 0.14), ha='center',
+                    va='top', fontsize=11, color=color, fontweight='bold')
+        ax.annotate(f"$S^f$={sf:.2f}\n$S^h$={sh:.2f}", (slot, radius_max + 0.06),
+                    ha='center', va='bottom', fontsize=7.5,
+                    color=PALETTE['muted'])
+
+    ax.set_xlim(-0.7, len(idx) - 0.3)
+    ax.set_ylim(-radius_max - 0.5, radius_max + 0.5)
+    ax.set_aspect('equal')
+    ax.axhline(0, color=PALETTE['grid'], lw=0.8, zorder=0)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ('left', 'right', 'top', 'bottom'):
+        ax.spines[sp].set_visible(False)
+    ax.set_title('Dual-sensitivity glyphs: mean vs variance')
+    ax.text(0.5, -0.02,
+            r'width $\propto$ mean sensitivity $S^f$    ·    '
+            r'height $\propto$ variance sensitivity $S^h$',
+            transform=ax.transAxes, ha='center', va='top', fontsize=9,
+            color=PALETTE['muted'])
+
+    fig.tight_layout()
+    return fig, ax
+
+
+def _plot_ellipse_plane(idx, mean_first, var_first, variable_names,
+                        mean_ci, var_ci, ci_scale, lvl, figsize):
+    """(S^f, S^h) plane with per-variable CI ellipses; returns (fig, ax)."""
+    min_radius = 0.010
+
+    def _half(ci, i):
+        if ci is not None and i in ci:
+            lo, hi = ci[i]
+            return max((float(hi) - float(lo)) / 2.0 * ci_scale, min_radius)
+        return min_radius
+
+    fig, ax = plt.subplots(figsize=figsize or (6.6, 6.2))
+    max_val = 0.0
+    for i in idx:
+        mx, vy = float(mean_first.get(i, 0.0)), float(var_first.get(i, 0.0))
+        max_val = max(max_val, mx, vy)
+        color = _var_color(i)
+        ax.add_patch(mpl.patches.Ellipse(
+            (mx, vy), width=2 * _half(mean_ci, i), height=2 * _half(var_ci, i),
+            facecolor=color, edgecolor=color, alpha=0.35, linewidth=1.4, zorder=2))
+        ax.plot(mx, vy, 'o', color=color, markersize=4, zorder=3)
+        ax.annotate(variable_names[i], (mx, vy), textcoords='offset points',
+                    xytext=(7, 6), fontsize=10, color=color,
+                    fontweight='bold', zorder=4)
+
+    hi = max(max_val * 1.2, 0.1)
+    lbl = 'equal influence' if ci_scale == 1.0 else f'equal (CI ×{ci_scale:g})'
+    ax.plot([0, hi], [0, hi], '--', color=PALETTE['muted'], lw=1, zorder=1,
+            label=lbl)
+    ax.text(0.97 * hi, 0.05 * hi, 'mean\ndrivers', ha='right', va='bottom',
+            fontsize=8, color=PALETTE['muted'], style='italic')
+    ax.text(0.03 * hi, 0.97 * hi, 'hidden variance\ndrivers', ha='left',
+            va='top', fontsize=8, color=PALETTE['muted'], style='italic')
+    ax.text(0.97 * hi, 0.97 * hi, 'dual-role', ha='right', va='top',
+            fontsize=8, color=PALETTE['muted'], style='italic')
+
+    ax.set_xlim(-0.02 * hi, hi)
+    ax.set_ylim(-0.02 * hi, hi)
+    ax.set_aspect('equal')
+    ax.set_xlabel(f'Mean {lvl} Sobol  $S_i^f$')
+    ax.set_ylabel(f'Variance {lvl} Sobol  $S_i^h$')
+    ax.set_title('Dual-sensitivity plane: mean vs variance')
+    ax.legend(loc='lower right')
 
     fig.tight_layout()
     return fig, ax

@@ -15,11 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   total-order* index (it acts only through the x1–x3 interaction). Covered by
   `tests/test_ishigami.py` (analytic values, generator, first-order recovery,
   and the heteroscedastic variance-driver recovery).
-- **Dual-sensitivity ellipse plot** — `analysis.visualization.plot_sensitivity_ellipses`,
-  a new visualization of the mean+variance Sobol spectrum. `mode='glyph'` draws
-  one ellipse per variable whose width ∝ mean sensitivity and height ∝ variance
-  sensitivity (shape tells the story: wide = mean driver, tall = variance
-  driver); `mode='plane'` places each variable at (S^f, S^h) with CI ellipses.
+- **Dual-sensitivity ellipse plot** — `plot_sensitivity_ellipses`, a new
+  visualization of the mean+variance Sobol spectrum, in both `analysis.visualization`
+  (lightweight, `save_path=` API) and `analysis.plots` (publication style,
+  returns `(fig, ax)`). `mode='glyph'` draws one ellipse per variable whose
+  width ∝ mean sensitivity and height ∝ variance sensitivity (shape tells the
+  story: wide = mean driver, tall = variance driver); `mode='plane'` places each
+  variable at (S^f, S^h) with CI ellipses.
 - **`examples/run_ishigami_heteroscedastic.py`** — an end-to-end capabilities
   showcase on a heteroscedastic Ishigami: recovers the analytic mean Sobol
   indices, fits the variance spectrum (x3 emerges as a hidden driver),
