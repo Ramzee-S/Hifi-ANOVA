@@ -59,3 +59,7 @@ CC_*
 *.blg
 *.out
 *.synctex.gz
+
+# Exception: committed documentation figures (override figures/ and *.png above)
+!docs/figures/
+!docs/figures/*.png

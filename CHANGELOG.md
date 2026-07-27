@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Worked-example showcase** (`docs/ishigami_showcase.md` + `.html`) — a visual,
+  explained tour of the toolbox on the heteroscedastic Ishigami fit: the dual
+  mean+variance Sobol spectrum and ellipse views, the learned effects (x3 flat
+  after pruning), the regularization paths + Pareto + variance-λ_h, the
+  fit-under-noise diagnostics (parity, surface, variance recovery), and the
+  `verify_model` output. Figures committed under `docs/figures/`; linked from the
+  README.
 - **Heteroscedastic-Ishigami benchmark** (`benchmarks/`) — a fixed, committed
   dataset (`train.csv`, `test.csv`, `test_truth.csv`) plus a comparison harness
   (`run_benchmark.py`). Fit any model on the train split, predict the test

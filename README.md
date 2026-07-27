@@ -14,6 +14,11 @@ Legendre, and Haar bases can be mixed per variable.
 
 📖 **Full option and API reference:** [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md).
 
+🖼️ **Worked example with figures:** [`docs/ishigami_showcase.md`](docs/ishigami_showcase.md)
+— a visual tour of the toolbox on a heteroscedastic Ishigami fit (dual mean+variance
+Sobol spectrum, regularization trade-offs, fit-under-noise diagnostics). A
+standalone [HTML version](docs/ishigami_showcase.html) is also included.
+
 > **Status: preliminary, work-in-progress release.** The library is usable and
 > tested (394 tests), but the API may change before a 1.0. Extracted and
 > sanitized from a research codebase; the manuscript / theory write-up and the
