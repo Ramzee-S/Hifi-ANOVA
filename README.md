@@ -2,13 +2,15 @@
 
 **Interpretable Regression with Analytic Sobol Diagnostics for Mean and Variance**
 
-*Hoeffding–Fourier decomposition for interpretable regression.*
+*HiFi-ANOVA — Hoeffding Interaction–Fidelity ANOVA.*
 
-A structured regression framework that decomposes both the conditional mean and
-variance by interaction order and frequency content, yielding **analytic Sobol
-sensitivity indices**, **input-dependent uncertainty**, and a multi-axis
-regularization hierarchy — with analytic hyperparameter selection via GCV and
-separate modes for prediction and sensitivity estimation.
+A framework for **interpretable regression** that decomposes both the conditional
+**mean** and the conditional **variance** of a response by interaction order,
+variable, and frequency content, using basis functions that satisfy the
+Hoeffding (ANOVA) side conditions. Sensitivity indices are read directly off the
+fitted coefficients — the model is interpretable *by design*, not explained
+post-hoc. The structured basis is not restricted to one family: Fourier,
+Legendre, and Haar bases can be mixed per variable.
 
 > **Status: preliminary, work-in-progress release.** The library is usable and
 > tested (394 tests), but the API may change before a 1.0. Extracted and
@@ -23,20 +25,34 @@ separate modes for prediction and sensitivity estimation.
 
 ## Why this exists
 
-Global sensitivity analysis normally means Monte-Carlo Sobol estimation (many
-model evaluations) *or* an interpretable model (GAM / EBM) with no principled
-sensitivity decomposition. HiFi-ANOVA fits a regression surrogate in a basis that
-satisfies the Hoeffding vanishing-integral condition, so inter-component
-orthogonality is **exact** and the Gram matrix is **known in closed form**. From
-a single ridge solve you then read off, analytically and without extra sampling:
+Computing analytic Sobol sensitivity indices from the coefficients of an
+orthogonal-basis regression is well established — it underlies variance
+decomposition in polynomial chaos expansions (PCE) and RS-HDMR. HiFi-ANOVA
+extends and integrates that idea in three directions, so that sensitivity
+analysis, uncertainty quantification, and structure discovery come at negligible
+cost beyond a single ridge fit:
 
-- **Sobol indices** (first / second / third order) with confidence intervals.
-- **A dual mean + variance Sobol spectrum** — which inputs drive the *mean*, and
-  which drive the *uncertainty*. (This is the most distinctive feature.)
-- **Component curves**, interaction discovery, effective degrees of freedom,
-  LOO-CV, and a full regularization path — all from the same solve.
+- **A dual mean + variance Sobol spectrum.** By jointly modelling the mean and
+  the log-variance with the same basis machinery, every variable gets a *pair* of
+  sensitivity indices — one for its effect on the expected outcome, one for its
+  effect on the predictive *uncertainty*. This surfaces "hidden" variables that
+  shape uncertainty while carrying no mean signal, and that are invisible to
+  standard feature-importance analysis.
+- **Three basis families with per-variable effect signatures.** Fourier,
+  Legendre, and Haar bases (Gram matrices ranging from near-diagonal to identity)
+  can be mixed per variable while preserving inter-variable orthogonality.
+  Cross-residual projection between the families splits each variable's effect
+  into **polynomial**, **oscillatory**, and **localized** shares, driving
+  data-adaptive basis selection.
+- **A one-solve diagnostic suite.** From the single matrix factorization of the
+  ridge fit come closed-form leave-one-out CV, residual noise estimation,
+  heteroscedasticity-robust confidence intervals for the Sobol indices (sandwich
+  estimator + delta method), K-fold CV via Woodbury downdates, interaction
+  screening by residual projection, and a full regularization path with
+  sensitivity indices at every penalty level.
 
-On Friedman-1, first-order indices match SALib ground truth within ~0.003 mean
+Everything is read off analytically, with no extra model evaluations. On
+Friedman-1, first-order indices match SALib ground truth within ~0.003 mean
 absolute error.
 
 ---
@@ -265,8 +281,11 @@ hifi_anova/
   for unbiased recovery.
 - **This is not primarily a top-tier predictor** — it trades a little predictive
   accuracy for interpretability and analytic sensitivity analysis.
-- **Confidence intervals** in `hifi_anova.api` currently assume a Fourier basis; CIs
-  for other bases are not yet validated.
+- **Penalty strategy affects attributions.** Different smoothness-penalty
+  strategies can leave predictive accuracy essentially unchanged while shifting
+  individual Sobol attributions substantially — a small-scale instance of the
+  general non-uniqueness of variable importance across near-equivalent models.
+  Report the penalty strategy alongside the indices.
 
 ## Relationship to prior work
 
@@ -283,7 +302,7 @@ the fully analytic one-solve diagnostic pipeline.
 - Validate confidence intervals for Legendre / Haar bases.
 - Refactor the large `training/trainer.py` and `analysis/plots.py` modules.
 - Package the interactive GUI and the theory/manuscript write-up.
-- **Structured Hoeffding-Fourier networks** — the current neural residual is a
+- **Structured Hoeffding-ANOVA networks** — the current neural residual is a
   plain black-box MLP whose ANOVA/Sobol integrity is enforced by orthogonal
   projection and re-decomposition. An *architecturally* Hoeffding-structured
   network (per-variable / per-interaction subnetworks) is planned as separate

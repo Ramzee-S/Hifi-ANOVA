@@ -1,7 +1,9 @@
 """HiFi-ANOVA: Interpretable Regression with Analytic Sobol Diagnostics for Mean and Variance.
 
-Hoeffding-Fourier decomposition. The core model class is :class:`HiFiANOVA` and
-the staged fitter is :class:`HiFiANOVATrainer`. The one-call entry point is
+HiFi-ANOVA (Hoeffding Interaction-Fidelity ANOVA) is a functional-ANOVA
+(Hoeffding) decomposition of the conditional mean and variance, realized over
+Fourier, Legendre, and Haar bases. The core model class is :class:`HiFiANOVA`
+and the staged fitter is :class:`HiFiANOVATrainer`. The one-call entry point is
 :func:`hifi_anova`.
 
     from hifi_anova import hifi_anova, HiFiANOVATrainer, compute_sobol_indices

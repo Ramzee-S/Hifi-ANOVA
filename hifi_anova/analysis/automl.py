@@ -1,6 +1,6 @@
 """Analytic AutoML: model selection, uncertainty, and diagnostics from one ridge solve.
 
-The linear structure of the Hoeffding-Fourier model enables a complete AutoML
+The linear-in-parameters structure of the HiFi-ANOVA model enables a complete AutoML
 pipeline without expensive retraining loops:
 
   1. Exact LOO-CV from hat matrix leverages (free from one solve)

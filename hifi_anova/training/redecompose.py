@@ -2,7 +2,7 @@
 
 Solution 1: Re-decomposition after joint fine-tuning
   Train jointly for best RMSE, then re-project the total learned function
-  onto the Hoeffding-Fourier basis using uniform evaluation points.
+  onto the structured (Hoeffding-ANOVA) basis using uniform evaluation points.
   The total prediction doesn't change — only the attribution between
   Fourier and NN changes.
 
@@ -42,7 +42,7 @@ def redecompose(model: HiFiANOVA,
     """Re-decompose a jointly-trained model into clean Fourier + NN parts.
 
     Generates uniform evaluation points, evaluates the total learned function
-    f_total = f_Fourier_old + f_NN, then computes the Hoeffding-Fourier
+    f_total = f_Fourier_old + f_NN, then computes the Hoeffding (ANOVA)
     decomposition of f_total by projecting onto the Fourier basis.
 
     The new Fourier coefficients represent the correct low-order decomposition

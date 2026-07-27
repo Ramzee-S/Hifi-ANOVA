@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hifi_anova"
 version = "0.1.0"
-description = "HiFi-ANOVA: interpretable regression with analytic Sobol diagnostics for mean and variance (Hoeffding-Fourier decomposition)."
+description = "HiFi-ANOVA (Hoeffding Interaction-Fidelity ANOVA): interpretable regression with analytic Sobol diagnostics for the conditional mean and variance."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "PolyForm-Internal-Use-1.0.0" }

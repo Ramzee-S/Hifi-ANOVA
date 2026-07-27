@@ -7,7 +7,7 @@ from typing import Tuple
 
 @dataclass
 class FourierComponent:
-    """A single Hoeffding-Fourier component (one variable or one pair).
+    """A single structured Hoeffding (ANOVA) component (one variable or one pair).
 
     This is a DATA CLASS, not an Equinox module. It's a structured container
     for coefficients and metadata, used by the analysis module for Sobol extraction.

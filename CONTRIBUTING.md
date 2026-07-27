@@ -53,7 +53,7 @@ observed vs. expected behavior, and your `jax` / `equinox` / `numpy` versions.
 See `CHANGELOG.md` (Known limitations) and the roadmap in `README.md` — e.g.
 the missing Ishigami benchmark, splitting the large `analysis/plots.py` module,
 validating confidence intervals for non-Fourier bases, and the structured
-Hoeffding-Fourier network follow-up.
+Hoeffding-ANOVA network follow-up.
 
 ---
 

@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Reframed the README and package descriptions to match the manuscript:
+  **HiFi-ANOVA = Hoeffding Interaction–Fidelity ANOVA**. The intro now leads with
+  the three contributions — the dual mean+variance Sobol spectrum, the three
+  basis families (Fourier / Legendre / Haar) with per-variable effect signatures,
+  and the one-solve diagnostic suite — instead of describing the method as a
+  "Hoeffding-Fourier decomposition" (Fourier is only one of three bases). Also
+  replaced the stale "CIs assume a Fourier basis" caveat (now fixed) with the
+  penalty-strategy attribution caveat.
 - Added **`LICENSING.md`** — a single overview of licensing and copyright
   covering source code (PolyForm Internal Use 1.0.0), documentation
   (all rights reserved), and third-party material — plus a REUSE-style
