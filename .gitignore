@@ -1,0 +1,58 @@
+# Byte-compiled / optimized / cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.conda/
+
+# Generated experiment / figure output
+figures/
+figures_*/
+plots/
+*_results/
+benchmark_results/
+overnight_results*/
+study_results/
+revision_results/
+*.png
+*.pdf
+
+# Model checkpoints / saved artifacts
+*.pkl
+*.npz
+saved_models/
+my_model/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Logs
+*.log
+
+# Manuscript / paper sources — this is a code-only release; the write-up is
+# kept out deliberately (may be added later, use `git add -f` if so).
+*.tex
+*.bib
+*.aux
+*.bbl
+*.blg
+*.out
+*.synctex.gz
