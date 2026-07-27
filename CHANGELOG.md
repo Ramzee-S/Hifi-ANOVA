@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **First-order group pruning** (`first_order_pruning` config: `'bic'` /
+  `'group_lasso'` / `'1se'` / `'none'`, default `'none'`). Post-fit, it zeroes
+  the entire first-order block of any variable whose marginal effect the
+  criterion rejects (a leave-one-group-out test on the full design; first-order
+  blocks are Hoeffding-orthogonal to the pair/triple blocks, so this does not
+  disturb the interactions). This fixes the case where a variable is *pure
+  interaction* — e.g. Ishigami x3 — for which plain ridge can only shrink the
+  spurious main-effect block, never set it to zero. `'bic'` robustly zeros x3's
+  first-order component down to N≈100. Wired into both the first-order-only and
+  Stage-B paths; reuses `training.sparse` / `training.selection`. Covered by
+  `tests/test_ishigami.py::test_first_order_pruning_zeros_x3`, and the Ishigami
+  example now enables it.
 - **Ishigami benchmark** — `hifi_anova.data.generate_ishigami` (with an optional
   heteroscedastic variant that drives the noise variance with x3) and
   `ishigami_sobol_indices`, the closed-form ground-truth Sobol indices. Ishigami

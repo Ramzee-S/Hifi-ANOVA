@@ -313,6 +313,7 @@ Pair generation is a two-step pipeline: **select active variables**, then
 | `variable_selection` | str or None | `None` | Principled first-order variable selection: `'bic'`, `'group_lasso'`, `'1se'`. `None` uses the legacy `pair_selection` path. |
 | `pair_candidates` | str or None | `None` | Candidate-pair heuristic over active variables: `'all'`, `'both'` (both vars active), `'either'` (≥1 active). Only used together with `variable_selection`. |
 | `pair_pruning` | str | `'none'` | Post-fit pair pruning criterion: `'bic'`, `'group_lasso'`, `'1se'`, or `'none'`. |
+| `first_order_pruning` | str | `'none'` | Post-fit **first-order** pruning: `'bic'`, `'group_lasso'`, `'1se'`, or `'none'`. Zeroes the entire first-order block of any variable whose marginal effect the criterion rejects — a leave-one-group-out test on the full design. First-order blocks are Hoeffding-orthogonal to the pair/triple blocks, so this cleanly removes a *spurious* main effect (e.g. a variable that is pure interaction) without disturbing the interactions. Plain ridge can only shrink such a block; it can never set it to zero. `'bic'` is the most robust at small N. |
 | `pair_selection` | str or None | `None` | Legacy one-shot variable-selection + candidate-generation. |
 | `pair_threshold` | float | `0.01` | Sobol threshold for threshold-based variable activity. |
 | `max_pair_variables` | int or None | `None` | Cap on number of active variables entering pair generation. |

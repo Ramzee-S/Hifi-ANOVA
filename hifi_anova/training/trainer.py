@@ -29,6 +29,50 @@ from .newton import newton_solve_log_variance
 from .mode import resolve_mode, auto_decide_next_stage
 
 
+def _prune_first_order_blocks(w_flat, phi_all, reg_full, y_centered,
+                              D, block1, G1, method, verbose=True):
+    """Zero the first-order block of any variable a group criterion rejects.
+
+    First-order and pair/triple blocks are Hoeffding-orthogonal, so a
+    leave-one-group-out test on the full design identifies variables whose
+    marginal (first-order) effect is not supported by the data. Their block is
+    set to exactly zero — the group-sparse step plain ridge cannot do. Because
+    of the orthogonality, zeroing a rejected block barely changes predictions.
+
+    Args:
+        w_flat: (F,) fitted coefficients [first-order | pairs | triples].
+        phi_all: (N, F) full design used for the fit.
+        reg_full: (F,) regularization diagonal matching phi_all.
+        y_centered: (N,) centered targets.
+        D, block1: number of variables and first-order features per variable.
+        G1: (block1, block1) first-order Gram matrix (for weighted norms).
+        method: 'bic' | 'group_lasso' | '1se' | 'none'.
+
+    Returns:
+        (w_pruned, info) — a float64 numpy copy of w_flat with rejected
+        first-order blocks zeroed, plus the selection diagnostics.
+    """
+    from .selection import prune_groups_postfit
+
+    fo_slices = [slice(i * block1, (i + 1) * block1) for i in range(D)]
+    G1_np = np.asarray(G1, dtype=np.float64)
+    surviving, info = prune_groups_postfit(
+        np.asarray(phi_all, dtype=np.float64),
+        np.asarray(y_centered, dtype=np.float64),
+        fo_slices, np.asarray(reg_full, dtype=np.float64),
+        method=method, gram_matrices=[G1_np] * D,
+        group_labels=[f"x{i+1}" for i in range(D)], verbose=verbose,
+    )
+    pruned = [i for i in range(D) if i not in set(surviving)]
+    w_new = np.asarray(w_flat, dtype=np.float64).copy()
+    for i in pruned:
+        w_new[i * block1:(i + 1) * block1] = 0.0
+    info['pruned_variables'] = pruned
+    if verbose and pruned:
+        print(f"    Zeroed first-order blocks: {[f'x{i+1}' for i in pruned]}")
+    return w_new, info
+
+
 class HiFiANOVATrainer:
     """Orchestrates the staged training procedure.
 
@@ -102,6 +146,16 @@ class HiFiANOVATrainer:
         # Stage 3: Post-fit pair pruning (after Stage B fit)
         #   'bic', 'group_lasso', '1se', 'none' = pruning criterion
         pair_pruning = cfg.get('pair_pruning', 'none')
+
+        # Post-fit FIRST-ORDER pruning: zero the whole first-order block of any
+        # variable whose marginal effect the criterion deems unsupported.
+        #   'bic', 'group_lasso', '1se', 'none'
+        # First-order blocks are Hoeffding-orthogonal to the pair/triple blocks,
+        # so a leave-one-group-out test on the full design cleanly removes a
+        # spurious main effect (e.g. Ishigami x3, which is pure interaction)
+        # without perturbing the interactions. Plain ridge can only shrink such a
+        # block, never zero it; this is the group-sparse step that can.
+        first_order_pruning = cfg.get('first_order_pruning', 'none')
 
         # Legacy: pair_selection does variable selection + candidate gen in one
         pair_selection = cfg.get('pair_selection', None)
@@ -215,6 +269,19 @@ class HiFiANOVATrainer:
                 'A', rmse_val_a, var_y_val, threshold=auto_threshold)
             if next_s == 'B':
                 stages = list(stages) + ['B']
+
+        # First-order pruning for first-order-only models (Stage B handles it
+        # otherwise, on the full design).
+        stage_b_will_run = ('B' in stages) or ('D' in stages and K2 > 0)
+        if first_order_pruning != 'none' and not stage_b_will_run:
+            print(f"=== First-order pruning ({first_order_pruning}) ===")
+            block1_fo = basis_size(K1, include_linear_1, basis_name)
+            w1_pruned, fo_info = _prune_first_order_blocks(
+                w1, phi1_train, reg1, y_centered, D, block1_fo, G1,
+                first_order_pruning, verbose=True)
+            results['first_order_pruning'] = fo_info
+            model = eqx.tree_at(lambda m: m.mean_model.w1, model,
+                                jnp.asarray(w1_pruned, dtype=jnp.float32))
 
         # ======== Pair candidate generation for Stage B ========
         # Two-step pipeline:
@@ -535,6 +602,16 @@ class HiFiANOVATrainer:
                 else:
                     print("  Third-order: no triples selected (too few active vars)")
 
+            # === Post-fit first-order pruning ===
+            if first_order_pruning != 'none':
+                print(f"  Post-fit first-order pruning ({first_order_pruning}):")
+                block1_fo = basis_size(K1, include_linear_1, basis_name)
+                w_all, fo_info = _prune_first_order_blocks(
+                    w_all, phi_all_train, reg_all, y_centered,
+                    D, block1_fo, G1, first_order_pruning, verbose=True)
+                w_all = jnp.asarray(w_all, dtype=jnp.float32)
+                results['first_order_pruning'] = fo_info
+
             # Split coefficients (block sizes depend on basis_type)
             from ..core.features import basis_size as _bs
             F1 = D * _bs(K1, include_linear_1, basis_name)
@@ -688,6 +765,21 @@ class HiFiANOVATrainer:
                 pair_mgr, G1, G2, K1, K2, Kh, D,
                 strategy, lambda1, lambda2, lambda_h, results
             )
+
+        # Enforce first-order pruning through any Stage C/D mean refit: the
+        # heteroscedastic (Stage D) alternating solve re-estimates the mean
+        # coefficients, so re-zero the rejected first-order blocks on the final
+        # model. First-order/pair orthogonality makes this a no-op for the
+        # interactions.
+        pruned_fo = results.get('first_order_pruning', {}).get(
+            'pruned_variables', [])
+        if pruned_fo:
+            block1_fo = basis_size(K1, include_linear_1, basis_name)
+            w1_cur = np.asarray(model.mean_model.w1, dtype=np.float64).copy()
+            for i in pruned_fo:
+                w1_cur[i * block1_fo:(i + 1) * block1_fo] = 0.0
+            model = eqx.tree_at(lambda m: m.mean_model.w1, model,
+                                jnp.asarray(w1_cur, dtype=jnp.float32))
 
         return model, results
 

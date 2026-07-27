@@ -129,6 +129,41 @@ def test_ishigami_first_order_recovery():
     assert s['mean_sobol']['total_order'][2] > 0.15
 
 
+@pytest.mark.integration
+def test_first_order_pruning_zeros_x3():
+    """first_order_pruning='bic' zeros x3's spurious first-order block."""
+    from hifi_anova.data.preprocessing import preprocess_data
+    from hifi_anova.training.trainer import HiFiANOVATrainer
+    from hifi_anova.analysis.sobol import compute_sobol_indices
+    from hifi_anova.analysis.component_eval import first_order_on_grid
+
+    X, y, _ = generate_ishigami(n_samples=1000, noise_std=0.1, seed=0)
+    data = preprocess_data(X, y, seed=0)
+    cfg = {'K1': 6, 'K2': 4, 'strategy': 'curvature',
+           'lambda_order1': 0.001, 'lambda_order2': 0.01, 'stages': ['A', 'B'],
+           'residual_nn': {'enabled': False}, 'first_order_pruning': 'bic'}
+    m, res = HiFiANOVATrainer(cfg).fit(
+        data['x_train'], data['y_train'], data['x_val'], data['y_val'])
+
+    # x3's marginal is rejected and its block zeroed -> exactly flat component.
+    assert 2 in res['first_order_pruning']['pruned_variables']
+    s = compute_sobol_indices(m, data['x_test'])
+    assert s['mean_sobol']['first_order'][2] == 0.0
+    _, f3 = first_order_on_grid(m, 2, 200)
+    assert float(np.max(np.abs(np.asarray(f3)))) == 0.0
+    # x1, x2 (real effects) and the x1-x3 interaction survive.
+    assert s['mean_sobol']['first_order'][0] > 0.2
+    assert s['mean_sobol']['first_order'][1] > 0.3
+    assert s['mean_sobol']['second_order'].get((0, 2), 0.0) > 0.1
+
+    # Without pruning, plain ridge leaves a nonzero spurious wiggle.
+    cfg_none = dict(cfg); cfg_none['first_order_pruning'] = 'none'
+    m2, _ = HiFiANOVATrainer(cfg_none).fit(
+        data['x_train'], data['y_train'], data['x_val'], data['y_val'])
+    _, f3_none = first_order_on_grid(m2, 2, 200)
+    assert float(np.max(np.abs(np.asarray(f3_none)))) > 0.05
+
+
 @pytest.mark.slow
 def test_heteroscedastic_ishigami_variance_driver():
     """Driving the noise with x3 makes x3 dominate the variance spectrum."""

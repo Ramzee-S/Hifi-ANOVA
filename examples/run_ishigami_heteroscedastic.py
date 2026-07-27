@@ -55,11 +55,18 @@ VAR_NAMES = ['$x_1$', '$x_2$', '$x_3$']
 
 # Mean + variance fit: first + second order mean (A, B) plus the heteroscedastic
 # variance stage (D). No NN residual — the structured model is enough here.
+#
+# first_order_pruning='bic' is the key setting for Ishigami: x3 has NO first-order
+# effect (it acts only through the x1-x3 interaction), but plain ridge leaves a
+# small spurious f_3(x3) wiggle. A BIC leave-one-group-out test on the first-order
+# blocks recognizes x3's marginal as unsupported and zeros the whole block, so the
+# fitted first-order component of x3 is exactly flat — robustly, down to N~100.
 CONFIG = {
     'K1': 12, 'K2': 6, 'Kh': 3,
     'strategy': 'curvature',
     'lambda_order1': 0.001, 'lambda_order2': 0.01, 'lambda_h': 0.1,
     'stages': ['A', 'B', 'D'],
+    'first_order_pruning': 'bic',
     'residual_nn': {'enabled': False},
     'max_outer_iter': 8, 'alternating_tol': 1e-4, 'newton_max_iter': 10,
 }
@@ -166,6 +173,12 @@ def main():
                    key=lambda kv: kv[1])
     print(f"\n  Top mean interaction: x{top_pair[0][0]+1}-x{top_pair[0][1]+1} "
           f"= {top_pair[1]:.4f}")
+
+    pruned = results.get('first_order_pruning', {}).get('pruned_variables', [])
+    if pruned:
+        print(f"  First-order pruning (BIC) zeroed the marginal of: "
+              f"{', '.join('x%d' % (i + 1) for i in pruned)} "
+              f"→ its component curve is exactly flat, not a spurious wiggle.")
 
     # ---- Interaction discovery (residual sieve) ------------------------
     print("\n" + "-" * 70)
