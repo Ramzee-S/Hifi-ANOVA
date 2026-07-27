@@ -12,6 +12,8 @@ fitted coefficients — the model is interpretable *by design*, not explained
 post-hoc. The structured basis is not restricted to one family: Fourier,
 Legendre, and Haar bases can be mixed per variable.
 
+📖 **Full option and API reference:** [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md).
+
 > **Status: preliminary, work-in-progress release.** The library is usable and
 > tested (394 tests), but the API may change before a 1.0. Extracted and
 > sanitized from a research codebase; the manuscript / theory write-up and the

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`docs/USER_GUIDE.md`** — a comprehensive user manual: the two APIs, a full
+  configuration reference (every trainer config key with type/default/effect),
+  complexity modes and stages, all six regularization strategies (including the
+  parameterized `sobolev[_s]` and `spectral[_a]`), the three bases and effect
+  signatures, residual models, sensitivity/uncertainty, the diagnostic suite,
+  and working with results.
+
+### Fixed
+- `api.py` module docstring advertised `hifi_anova.load(...)`, which does not
+  exist; corrected to `hifi_anova.model.io.load_model`.
+
 ### Changed
 - Reframed the README and package descriptions to match the manuscript:
   **HiFi-ANOVA = Hoeffding Interaction–Fidelity ANOVA**. The intro now leads with

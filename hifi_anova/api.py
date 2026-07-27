@@ -22,7 +22,8 @@ Usage:
 
     # Save / load
     result.save('my_model/')
-    result = hifi_anova.load('my_model/')
+    from hifi_anova.model.io import load_model
+    loaded = load_model('my_model/')   # dict with 'model', 'transformer', 'config', ...
 """
 
 import jax
