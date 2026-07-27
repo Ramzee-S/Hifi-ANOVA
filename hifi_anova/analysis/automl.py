@@ -295,30 +295,53 @@ def sobol_confidence_intervals(
 
     z_crit = sp_norm.ppf(1.0 - alpha / 2)
 
+    # ---- Full delta-method gradient over ALL component blocks ----
+    # S_i = V_i / V_tot with V_tot = sum_j V_j, so S_i depends on every
+    # component's coefficients through the denominator:
+    #   dS_i/dw_i = 2 G w_i (1 - S_i) / V_tot          (own block)
+    #   dS_i/dw_j = -S_i * 2 G_j w_j / V_tot   (j != i) (denominator coupling)
+    # Dropping the j != i terms (own-block-only delta method) underestimates
+    # SE(S) by a factor that does NOT vanish with N and grows with S_i —
+    # measured ~13-15% SE deficit => ~90% actual coverage at 95% nominal.
+    # We therefore use the full gradient with the full covariance matrix.
+    #
+    # U holds 2 G_j w_j stacked per component block (zero on any extra
+    # columns such as residual features, which do not enter S).
+    U = np.zeros(F, dtype=np.float64)
+    for i in range(D):
+        sl = slice(i * block1, (i + 1) * block1)
+        U[sl] = 2.0 * (G1 @ w[sl])
+    if K2 > 0 and P > 0 and G2 is not None:
+        G2_np_u = np.asarray(G2, dtype=np.float64)
+        b2 = G2_np_u.shape[0]
+        for p in range(P):
+            sl = slice(F1 + p * b2, F1 + (p + 1) * b2)
+            U[sl] = 2.0 * (G2_np_u @ w[sl])
+    if K3 > 0 and T > 0 and G3 is not None:
+        G3_np_u = np.asarray(G3, dtype=np.float64)
+        b3 = G3_np_u.shape[0]
+        for t in range(T):
+            sl = slice(F1 + F2 + t * b3, F1 + F2 + (t + 1) * b3)
+            U[sl] = 2.0 * (G3_np_u @ w[sl])
+    Cov_U = Cov_w @ U          # (F,)
+    UCU = float(U @ Cov_U)     # scalar: U^T Cov U
+
     def _sobol_ci(var_component, var_total, w_slice, G_block):
-        """Compute S, SE(S), and CI for one component via delta method.
+        """Compute S, SE(S), and CI for one component via the full delta method.
 
-        S = w^T G w / total_var
-        dS/dw_slice = 2 G w / total_var - S * (sum of 2 G_j w_j / total_var for all j)
-
-        Simplification: for the component's own w_slice, the dominant term is
-        dS/dw = 2 G w / total_var (the cross-term is second order for S << 1).
-        We use the full gradient for accuracy.
+        With g_i = (e_i ∘ U - S_i U) / V_tot (e_i = indicator of the own
+        block), Var(S_i) = g_i^T Cov g_i expands to
+          [U_i^T Cov_ii U_i - 2 S_i U_i^T (Cov U)_i + S_i^2 U^T Cov U] / V_tot^2
+        which needs only the own-block slice of Cov and the precomputed
+        Cov_U / UCU — no per-component F x F work.
         """
         S = var_component / var_total if var_total > 0 else 0.0
 
-        # Gradient of numerator w.r.t. w_slice: d(w^T G w)/dw = 2 G w
-        grad_num = 2.0 * G_block @ w[w_slice]  # (block_size,)
-
-        # Full gradient of S w.r.t. all w: need dS/dw for the full w vector
-        # dS/dw_slice = (1/V_tot) * 2Gw - (V_i/V_tot^2) * dV_tot/dw_slice
-        # where dV_tot/dw_slice = 2Gw (same component)
-        # = 2Gw/V_tot - S * 2Gw/V_tot = 2Gw(1-S)/V_tot
-        grad_S = grad_num * (1.0 - S) / var_total
-
-        # SE via delta method: SE(S) = sqrt(grad^T Cov_slice grad)
-        Cov_slice = Cov_w[w_slice, w_slice]  # (block, block)
-        var_S = float(grad_S @ Cov_slice @ grad_S)
+        own = U[w_slice]  # = 2 G_block w[w_slice]
+        var_num = (float(own @ Cov_w[w_slice, w_slice] @ own)
+                   - 2.0 * S * float(own @ Cov_U[w_slice])
+                   + S * S * UCU)
+        var_S = var_num / (var_total * var_total)
         se_S = np.sqrt(max(0.0, var_S))
 
         lo = max(0.0, S - z_crit * se_S)

@@ -16,6 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and working with results.
 
 ### Fixed
+- **Sobol confidence intervals undercovered (~90% actual at 95% nominal) — for
+  every basis.** The delta-method gradient in
+  `analysis/automl.py::sobol_confidence_intervals` only used the component's own
+  coefficient block, dropping the denominator-coupling terms
+  `∂S_i/∂w_j = −S_i·2G_j w_j / V_tot` (j ≠ i) and the corresponding covariance
+  contributions. The resulting SE deficit (~13–15%) is proportional to the
+  leading-order term, so it did **not** vanish with N, and grew with `S_i` (worst
+  for the largest indices). Now the full gradient over all component blocks with
+  the full sandwich covariance is used (cheap: one precomputed `Cov·U` vector).
+  Monte-Carlo validation (in-basis ground truth, 400 noise draws): coverage
+  0.94–0.96 at 95% nominal and SE/SD ≈ 1.00 for Fourier, Legendre, and Haar
+  alike (previously ~0.90 / ~0.86 for all three). A deterministic coverage
+  regression test (`tests/test_automl.py::TestSobolCICoverageAcrossBases`)
+  guards all three bases. This also resolves the roadmap item "validate CIs for
+  Legendre/Haar": the CI machinery is basis-agnostic, and Legendre/Haar were
+  never worse than Fourier — all three shared the same gradient bug.
 - `api.py` module docstring advertised `hifi_anova.load(...)`, which does not
   exist; corrected to `hifi_anova.model.io.load_model`.
 - **`mode='heteroscedastic'` no longer silently trains a black-box NN residual.**

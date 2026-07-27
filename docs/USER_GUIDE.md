@@ -688,6 +688,15 @@ for i, (S, lo, hi) in ci['first_order'].items():
     print(f"x{i+1}: S = {S:.3f} [{lo:.3f}, {hi:.3f}]")
 ```
 
+The delta method uses the **full gradient** of `S_i = V_i / V_tot`, including
+the denominator-coupling terms `∂S_i/∂w_j = −S_i·2G_j w_j / V_tot` for `j ≠ i`
+(uncertainty in the other components propagates into `S_i` through the shared
+total). Dropping those terms — the own-block-only shortcut — understates the
+standard error by ~13–15% *independent of sample size*, i.e. ~90% actual
+coverage at 95% nominal. With the full gradient, Monte-Carlo coverage is
+nominal (~0.94–0.96 at 95%) for all three bases (Fourier, Legendre, Haar); a
+deterministic coverage regression test in `tests/test_automl.py` guards this.
+
 The one-call API computes first-order (and available second-order) CIs for you
 and exposes them as `result.sobol_ci`.
 

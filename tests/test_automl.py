@@ -213,3 +213,70 @@ class TestSampleSizeDiagnostics:
             regression_data['Phi'], regression_data['y'], regression_data['reg'],
             regression_data['D'], regression_data['K1'], regression_data['G1'])
         assert diag['order1']['ess_per_param'] > 10
+
+
+class TestSobolCICoverageAcrossBases:
+    """Monte-Carlo coverage regression test for the Sobol CI delta method.
+
+    Guards against the own-block-only delta gradient bug: dropping the
+    denominator-coupling terms dS_i/dw_j = -S_i * 2 G_j w_j / V_tot (j != i)
+    underestimates SE(S) by ~13-15% INDEPENDENT of N, giving ~90% actual
+    coverage at 95% nominal. With the full gradient, coverage is nominal for
+    all three bases. Fully deterministic (fixed seeds).
+    """
+
+    @pytest.mark.parametrize('basis_name', ['fourier', 'legendre', 'haar'])
+    def test_coverage_and_se_calibration(self, basis_name):
+        D, K1, N, R = 3, 3, 1200, 120
+        noise_sd, lam = 0.5, 1e-6
+        z95 = 1.959963985
+
+        rng = np.random.default_rng(20260727)
+        X = rng.uniform(0.0, 1.0, size=(N, D))
+        Phi = np.asarray(build_first_order_features(X, K1, True, basis_name),
+                         dtype=np.float64)
+        F = Phi.shape[1]
+        block = F // D
+
+        # In-basis ground truth: model correctly specified, estimand exact
+        w_true = rng.standard_normal(F)
+        signal = Phi @ w_true
+        signal = signal - signal.mean()
+        w_true /= signal.std()
+        signal /= signal.std()
+
+        G1 = np.asarray(build_gram_matrix(K1, True, basis_name), dtype=np.float64)
+        reg = np.asarray(build_regularization_vector(
+            D, K1, 0, 0, 'variance', lam, 0.0,
+            include_linear_1=True, basis_name=basis_name), dtype=np.float64)
+
+        var_true = np.array([
+            w_true[i*block:(i+1)*block] @ G1 @ w_true[i*block:(i+1)*block]
+            for i in range(D)])
+        S_true = var_true / var_true.sum()
+
+        S_hat = np.zeros((R, D))
+        lo_arr = np.zeros((R, D))
+        hi_arr = np.zeros((R, D))
+        noise_rng = np.random.default_rng(42)
+        for r in range(R):
+            y = signal + noise_rng.normal(0.0, noise_sd, size=N)
+            y = y - y.mean()
+            ci = sobol_confidence_intervals(
+                Phi, y, reg, D, K1, G1, K2=0, P=0,
+                include_linear_1=True, basis_name=basis_name)
+            for i in range(D):
+                S_hat[r, i], lo_arr[r, i], hi_arr[r, i] = ci['first_order'][i]
+
+        coverage = ((lo_arr <= S_true) & (S_true <= hi_arr)).mean()
+        mc_sd = S_hat.std(axis=0, ddof=1)
+        se_mean = ((hi_arr - lo_arr) / (2 * z95)).mean(axis=0)
+        se_sd_ratio = float((se_mean / mc_sd).mean())
+
+        # Nominal 0.95; the old own-block-only gradient gives ~0.86-0.90
+        # coverage and SE/SD ~0.86 on this config.
+        assert coverage >= 0.90, (
+            f"{basis_name}: coverage {coverage:.3f} < 0.90 (nominal 0.95) — "
+            f"delta-method SE underestimates sampling SD")
+        assert 0.90 <= se_sd_ratio <= 1.20, (
+            f"{basis_name}: mean SE/SD = {se_sd_ratio:.3f} outside [0.90, 1.20]")

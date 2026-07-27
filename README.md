@@ -334,7 +334,9 @@ the fully analytic one-solve diagnostic pipeline.
 ## Roadmap
 
 - Add the Ishigami benchmark and other standard SA test functions.
-- Validate confidence intervals for Legendre / Haar bases.
+- ~~Validate confidence intervals for Legendre / Haar bases.~~ Done: Monte-Carlo
+  coverage is nominal (~0.95) for all three bases after the full-gradient
+  delta-method fix; a coverage regression test guards it.
 - Refactor the large `training/trainer.py` and `analysis/plots.py` modules.
 - Package the interactive GUI and the theory/manuscript write-up.
 - **Structured Hoeffding-ANOVA networks** — the current neural residual is a
