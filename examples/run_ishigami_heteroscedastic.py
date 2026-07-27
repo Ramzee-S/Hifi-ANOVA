@@ -47,7 +47,10 @@ from hifi_anova.training.trainer import HiFiANOVATrainer
 from hifi_anova.analysis.sobol import compute_sobol_indices
 from hifi_anova.analysis.diagnostics import calibration_report
 from hifi_anova.analysis.interaction_discovery import scan_missing_pairs
-from hifi_anova.analysis.reg_path import compute_reg_path, plot_reg_path
+from hifi_anova.analysis.reg_path import (
+    compute_reg_path, plot_reg_path, plot_pareto_frontier,
+    compute_variance_reg_path, plot_variance_reg_path,
+)
 from hifi_anova.analysis.visualization import (
     plot_dual_sobol, plot_component_functions, plot_sensitivity_ellipses,
 )
@@ -259,12 +262,32 @@ def main():
           "the residual.")
     plot_reg_path(path, VAR_NAMES, save_prefix='figures/ishigami')
 
+    # Pareto frontier: model complexity (df) vs unexplained variance.
+    y_var = float(np.var(np.asarray(data['y_train'])))
+    plot_pareto_frontier(path, y_var, save_path='figures/ishigami_pareto.png')
+
+    # Variance-model path: hold the mean fixed and sweep the variance penalty
+    # lambda_h. x3 dominates the variance spectrum across the whole range.
+    vpath = compute_variance_reg_path(
+        model, data['x_train'], data['y_train'],
+        strategy='variance', n_lambdas=30, lambda_h_range=(1e-3, 1e2))
+    plot_variance_reg_path(vpath, VAR_NAMES, lambda_h_used=CONFIG['lambda_h'],
+                           save_prefix='figures/ishigami')
+    x3_share = vpath['sobol_h_paths'][2]
+    print(f"  Variance model (lambda_h path): x3's variance Sobol stays "
+          f"{x3_share.min():.2f}-{x3_share.max():.2f} across lambda_h "
+          f"[1e-3, 1e2].")
+
     # ---- Figures --------------------------------------------------------
     print("\n" + "-" * 70)
     print("FIGURES")
     print("-" * 70)
     print("  figures/ishigami_reg_path.png         (L-curve, GCV/evidence, "
           "Sobol paths, variance decomposition)")
+    print("  figures/ishigami_pareto.png           (complexity vs unexplained "
+          "variance)")
+    print("  figures/ishigami_var_reg_path.png     (variance-model Sobol vs "
+          "lambda_h)")
     plot_dual_sobol(sobol, VAR_NAMES,
                     save_path='figures/ishigami_dual_sobol.png')
     print("  figures/ishigami_dual_sobol.png       (paired mean/variance bars)")

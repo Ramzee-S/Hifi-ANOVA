@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Variance-model regularization path** — `analysis.reg_path.compute_variance_reg_path`
+  / `plot_variance_reg_path`, the variance analogue of `compute_reg_path`: holds
+  the fitted mean fixed and sweeps the variance penalty `lambda_h` (refitting the
+  log-variance model by Newton at each point), recording the variance-Sobol
+  spectrum and total explained log-variance. The Ishigami example uses it (x3's
+  variance Sobol stays ~1 across the whole `lambda_h` range) and also renders the
+  Pareto frontier (`plot_pareto_frontier`: complexity vs unexplained variance).
 - **First-order group pruning** (`first_order_pruning` config: `'bic'` /
   `'group_lasso'` / `'1se'` / `'none'`, default `'none'`). Post-fit, it zeroes
   the entire first-order block of any variable whose marginal effect the

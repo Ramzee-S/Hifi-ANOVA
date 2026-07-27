@@ -408,3 +408,134 @@ def plot_pareto_frontier(path: RegPathResult,
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
+
+
+# ============================================================================
+# Variance-model regularization path (lambda_h sweep, mean held fixed)
+# ============================================================================
+
+def compute_variance_reg_path(
+    model,
+    x: np.ndarray,
+    y: np.ndarray,
+    strategy: str = 'variance',
+    n_lambdas: int = 40,
+    lambda_h_range: Tuple[float, float] = (1e-3, 1e2),
+    newton_max_iter: int = 15,
+) -> Dict:
+    """Regularization path for the *variance* model over lambda_h.
+
+    The mean model is held fixed at its fitted value; for each lambda_h the
+    first-order log-variance model is refit (Newton) on the squared mean
+    residuals, and its variance-Sobol spectrum is recorded. This is the variance
+    analogue of :func:`compute_reg_path` (which sweeps the mean ridge lambda).
+
+    Requires a heteroscedastic `model` (``model.variance_model is not None``).
+
+    Args:
+        model: a fitted HiFiANOVA with a variance model.
+        x: (N, D) inputs in [0,1] quantile space (e.g. data['x_train']).
+        y: (N,) targets on the original scale.
+        strategy: penalty strategy for the variance blocks.
+        n_lambdas: number of lambda_h grid points (log-spaced).
+        lambda_h_range: (min, max) for the lambda_h grid.
+        newton_max_iter: inner Newton iterations per lambda_h.
+
+    Returns:
+        dict with 'lambdas' (n,), 'sobol_h_paths' {i: (n,)} first-order variance
+        Sobol per variable, and 'var_h_total' (n,) total variance-model variance.
+    """
+    from ..training.newton import newton_solve_log_variance
+    from ..training.regularization import build_variance_regularization_vector
+
+    if getattr(model, 'variance_model', None) is None:
+        raise ValueError("compute_variance_reg_path requires a heteroscedastic "
+                         "model (model.variance_model is None).")
+
+    Kh = model.Kh
+    D = model.D
+    il_h1 = getattr(model, 'include_linear_h1', True)
+    bn = model.basis_name
+    block_h = basis_size(Kh, il_h1, bn)
+    Gh = np.asarray(build_gram_matrix(Kh, il_h1, bn), dtype=np.float64)
+
+    xj = jnp.asarray(x)
+    psi1 = jnp.asarray(np.asarray(model.build_psi1(xj), dtype=np.float64))
+    mean_pred = np.asarray(model.predict_mean_only(xj))
+    r2 = jnp.asarray((np.asarray(y, dtype=np.float64) - mean_pred) ** 2)
+    h0_init = float(jnp.log(jnp.mean(r2)))
+
+    lambdas = np.geomspace(lambda_h_range[0], lambda_h_range[1], n_lambdas)
+    sobol_h_paths = {i: np.zeros(n_lambdas) for i in range(D)}
+    var_h_total = np.zeros(n_lambdas)
+
+    for k, lam_h in enumerate(lambdas):
+        reg = jnp.asarray(np.asarray(build_variance_regularization_vector(
+            D, Kh, strategy, float(lam_h),
+            include_linear_h1=il_h1, basis_name=bn), dtype=np.float64))
+        try:
+            w_h, _ = newton_solve_log_variance(
+                psi1, r2, jnp.zeros(D * block_h, dtype=jnp.float64),
+                h0_init, reg, max_iter=newton_max_iter)
+            w_h = np.asarray(w_h, dtype=np.float64)
+        except Exception:
+            continue
+        var_i = np.array([
+            max(0.0, w_h[i * block_h:(i + 1) * block_h] @ Gh
+                @ w_h[i * block_h:(i + 1) * block_h]) for i in range(D)])
+        total = float(var_i.sum())
+        var_h_total[k] = total
+        if total > 0:
+            for i in range(D):
+                sobol_h_paths[i][k] = var_i[i] / total
+
+    return {'lambdas': lambdas, 'sobol_h_paths': sobol_h_paths,
+            'var_h_total': var_h_total}
+
+
+def plot_variance_reg_path(result: Dict,
+                           variable_names: Optional[List[str]] = None,
+                           lambda_h_used: Optional[float] = None,
+                           save_prefix: Optional[str] = None):
+    """Plot the variance-model regularization path (see compute_variance_reg_path).
+
+    Two panels: variance-Sobol S_i^h vs lambda_h, and total variance-model
+    variance vs lambda_h. Marks ``lambda_h_used`` if given.
+    """
+    import matplotlib.pyplot as plt
+
+    lambdas = result['lambdas']
+    paths = result['sobol_h_paths']
+    D = len(paths)
+    if variable_names is None:
+        variable_names = [f"x{i+1}" for i in range(D)]
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+    ax = axes[0]
+    for i in range(D):
+        ax.semilogx(lambdas, paths[i], label=variable_names[i], linewidth=1.8)
+    if lambda_h_used is not None:
+        ax.axvline(lambda_h_used, color='gray', linestyle='--', alpha=0.6,
+                   label=r'$\lambda_h$ used')
+    ax.set_xlabel(r'$\lambda_h$')
+    ax.set_ylabel('Variance Sobol  $S_i^h$')
+    ax.set_title('Variance-model Sobol paths')
+    ax.set_ylim(0, 1.02)
+    ax.legend(loc='center left', fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    ax.semilogx(lambdas, result['var_h_total'], 'k-', linewidth=1.8)
+    if lambda_h_used is not None:
+        ax.axvline(lambda_h_used, color='gray', linestyle='--', alpha=0.6)
+    ax.set_xlabel(r'$\lambda_h$')
+    ax.set_ylabel('Total variance-model variance')
+    ax.set_title('Explained log-variance vs $\\lambda_h$')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if save_prefix:
+        plt.savefig(f"{save_prefix}_var_reg_path.png", dpi=150,
+                    bbox_inches='tight')
+    return fig

@@ -189,3 +189,12 @@ def test_heteroscedastic_ishigami_variance_driver():
     assert vf[0] < 0.1 and vf[1] < 0.1
     # ... while x3 stays first-order-silent in the mean.
     assert s['mean_sobol']['first_order'][2] < 0.05
+
+    # Variance-model regularization path: x3 dominates across all lambda_h.
+    from hifi_anova.analysis.reg_path import compute_variance_reg_path
+    vpath = compute_variance_reg_path(
+        model, data['x_train'], data['y_train'], n_lambdas=8,
+        lambda_h_range=(1e-2, 1e1))
+    assert set(vpath['sobol_h_paths'].keys()) == {0, 1, 2}
+    assert vpath['sobol_h_paths'][2].min() > 0.8   # x3 stays dominant
+    assert vpath['var_h_total'].shape == (8,)
