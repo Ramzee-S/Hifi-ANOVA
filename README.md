@@ -172,6 +172,38 @@ config = {'mode': 'auto', 'K1': 10, 'K2': 5, 'strategy': 'variance',
 
 ---
 
+## Regularization strategies
+
+The `strategy` key controls *how* the ridge penalty is distributed across the
+basis coefficients (the penalty is `wᵀ diag(r) w`, one entry `r[j]` per
+coefficient). It is an axis of control that is largely independent of the
+overall strength `λ` — it decides *which* coefficients are shrunk hardest.
+Six strategies are implemented (the formulas below are for the Fourier basis at
+harmonic `k`; each adapts automatically to the Legendre and Haar bases):
+
+| `strategy` | Penalty `r[j]` | Effect |
+|---|---|---|
+| `'uniform'` | `λ` | Plain ridge — every coefficient penalized equally (reference; not ideal for Fourier). |
+| `'variance'` *(default)* | `λ · G[j,j]` | **Equal-impact**: each coefficient penalized by the variance it contributes, so `λ` is a direct "variance budget" per feature. |
+| `'smoothness'` | `λ · (2πk)² / 2` | Integrated squared **first** derivative (Sobolev H¹) — penalizes rate of change (smoothing-spline style). |
+| `'curvature'` | `λ · (2πk)⁴ / 2` | Integrated squared **second** derivative — penalizes curvature, leaves linear effects free (cubic-spline penalty). |
+| `'sobolev_s'` | `λ · (1 + (2πk)²)ˢ` | Sobolev **Hˢ** norm; a single knob that interpolates `uniform` (s=0) → `smoothness` (s≈1) → `curvature` (s≈2). Default `s=1`. E.g. `'sobolev_2'`. |
+| `'spectral_a'` | `λ · kᵃ` | Direct frequency weighting; `a=0` ≈ uniform, `a≈2` ≈ smoothness, `a≈4` ≈ curvature. Default `a=2`. E.g. `'spectral_1.0'`. |
+
+The last two are *parameterized*: the suffix after the underscore sets the
+exponent (`'sobolev_1.5'`, `'spectral_3'`). `sobolev`'s `+1` term regularizes the
+linear coefficient cleanly; `variance` and `sobolev` are the most principled
+defaults for interpretable sensitivity work.
+
+> **Report the penalty alongside the indices.** Different smoothness strategies
+> can leave predictive accuracy essentially unchanged while shifting individual
+> Sobol attributions substantially — a small-scale instance of the general
+> non-uniqueness of variable importance across near-equivalent models. See
+> [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) §6 for the full treatment, including
+> the per-basis (Legendre / Haar) forms.
+
+---
+
 ## Key capabilities
 
 ### Sobol estimation mode (unbiased sensitivity recovery)
