@@ -163,6 +163,16 @@ def test_first_order_pruning_zeros_x3():
     _, f3_none = first_order_on_grid(m2, 2, 200)
     assert float(np.max(np.abs(np.asarray(f3_none)))) > 0.05
 
+    # verify_model: all checks pass and x3 flagged as pure-interaction.
+    from hifi_anova.analysis.diagnostics import verify_model
+    report = verify_model(m, data['x_test'], data['y_test'],
+                          x_train=data['x_train'],
+                          feature_names=['x1', 'x2', 'x3'], verbose=False)
+    assert report['all_pass']
+    pure = [c for c in report['checks']
+            if c['name'] == 'Pure-interaction variables']
+    assert pure and 'x3' in pure[0]['value']
+
 
 @pytest.mark.slow
 def test_heteroscedastic_ishigami_variance_driver():

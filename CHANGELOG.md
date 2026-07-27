@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`verify_model` health check** — `analysis.diagnostics.verify_model` runs the
+  diagnostic workflow end-to-end and returns a pass/warn/fail report (Sobol
+  additivity, index bounds, test R², calibration coverage for heteroscedastic
+  models, input-correlation level; flags pure-interaction variables). Confirms a
+  fit is internally consistent before its Sobol indices are trusted. Documented
+  in USER_GUIDE §10.6 with the recommended path→verify workflow, demonstrated in
+  the Ishigami example, and covered by `tests/test_ishigami.py`.
 - **Variance-model regularization path** — `analysis.reg_path.compute_variance_reg_path`
   / `plot_variance_reg_path`, the variance analogue of `compute_reg_path`: holds
   the fitted mean fixed and sweeps the variance penalty `lambda_h` (refitting the

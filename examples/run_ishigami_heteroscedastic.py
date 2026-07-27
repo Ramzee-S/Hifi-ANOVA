@@ -45,7 +45,7 @@ from hifi_anova.data.synthetic import generate_ishigami, ishigami_sobol_indices
 from hifi_anova.data.preprocessing import preprocess_data
 from hifi_anova.training.trainer import HiFiANOVATrainer
 from hifi_anova.analysis.sobol import compute_sobol_indices
-from hifi_anova.analysis.diagnostics import calibration_report
+from hifi_anova.analysis.diagnostics import calibration_report, verify_model
 from hifi_anova.analysis.interaction_discovery import scan_missing_pairs
 from hifi_anova.analysis.reg_path import (
     compute_reg_path, plot_reg_path, plot_pareto_frontier,
@@ -220,6 +220,13 @@ def main():
         for i in range(3):
             print(f"  x{i+1}: mean S1 in [{mean_ci[i][0]:.3f}, {mean_ci[i][1]:.3f}]"
                   f"   var S1 in [{var_ci[i][0]:.3f}, {var_ci[i][1]:.3f}]")
+
+    # ---- Model verification (self-consistency health check) -------------
+    print("\n" + "-" * 70)
+    print("MODEL VERIFICATION")
+    print("-" * 70)
+    verify_model(model, data['x_test'], data['y_test'],
+                 x_train=data['x_train'], feature_names=VAR_NAMES)
 
     # ---- Explained variance: expectation vs variance --------------------
     print("\n" + "-" * 70)

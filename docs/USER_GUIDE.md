@@ -827,6 +827,32 @@ Fourier epistemic variance (`hifi_anova.model.predict.predict_intervals`), and
 give the absolute variance booked to each order for auditing how much of the
 signal the model actually explains.
 
+### 10.6 Model verification — a one-call health check
+
+`hifi_anova.analysis.diagnostics.verify_model` runs the diagnostic workflow
+end-to-end and returns a pass / warn / fail report, so you can confirm a fit is
+trustworthy *before* reading Sobol indices off it. It checks Sobol additivity
+(structural indices sum to ~1), index bounds (total-order ≥ first-order, all in
+[0,1]), test R², prediction-interval calibration (for heteroscedastic models),
+and input-correlation level; it also flags pure-interaction variables (zero
+first-order but non-zero total-order).
+
+```python
+from hifi_anova.analysis.diagnostics import verify_model
+
+report = verify_model(model, x_test, y_test, x_train=x_train,
+                      feature_names=names)
+# -> prints a [PASS]/[WARN]/[FAIL] table; report['all_pass'] is the summary bool.
+```
+
+**Recommended workflow.** Use the three regularization paths to *choose* and
+*understand* the penalty — the mean path (§10.3, `compute_reg_path`) with its
+Pareto view (`plot_pareto_frontier`, complexity vs unexplained variance) for the
+mean ridge `λ`, and `compute_variance_reg_path` for the variance penalty `λ_h` —
+then `verify_model` to confirm the *fitted* model at the chosen penalty is
+internally consistent. `examples/run_ishigami_heteroscedastic.py` walks through
+all four.
+
 ---
 
 ## 11. Working with results
