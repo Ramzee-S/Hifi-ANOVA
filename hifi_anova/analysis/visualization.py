@@ -7,6 +7,13 @@ from typing import Optional, Dict
 
 from ..core.features import basis_size
 
+# Qualitative per-variable palette (colour-blind safe), mirrors plots.VAR_COLORS.
+VAR_COLORS = [
+    '#3274A1', '#E1812C', '#3A923A', '#C03D3E',
+    '#9372B2', '#845B53', '#D584BD', '#7F7F7F',
+    '#BCBD22', '#17BECF', '#AEC7E8', '#FFBB78',
+]
+
 
 def plot_sobol_bars(sobol_results: dict, variable_names: Optional[list] = None,
                    title: str = "Sobol Sensitivity Indices",
@@ -162,6 +169,172 @@ def plot_interaction_heatmap(model, pair_index: int,
     ax.set_xlabel(f"x{j+1}")
     ax.set_ylabel(f"x{i+1}")
     ax.set_title(f"Interaction f_{{{i+1},{j+1}}}")
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig
+
+
+def plot_sensitivity_ellipses(sobol_results: dict,
+                              variable_names: Optional[list] = None,
+                              mode: str = 'glyph',
+                              mean_ci: Optional[Dict] = None,
+                              var_ci: Optional[Dict] = None,
+                              use: str = 'first_order',
+                              top_k: Optional[int] = None,
+                              ci_scale: float = 1.0,
+                              title: Optional[str] = None,
+                              save_path: Optional[str] = None):
+    """Visualize the dual (mean vs variance) Sobol spectrum as ellipses.
+
+    Two complementary views of the same idea — that every variable carries a
+    *pair* of sensitivities, one for the mean E[y|x] and one for the variance
+    Var[y|x]:
+
+    ``mode='glyph'`` (default) — one ellipse per variable, its **width**
+        proportional to the mean sensitivity ``S_i^f`` and its **height**
+        proportional to the variance sensitivity ``S_i^h``. The *shape* is the
+        message: a wide, flat ellipse is a mean driver; a tall, narrow ellipse
+        is a variance driver; a circle is a balanced dual-role variable. This
+        reads the whole spectrum at a glance without axes to trace.
+
+    ``mode='plane'`` — a quantitative scatter placing each variable at
+        ``(S_i^f, S_i^h)``. Bottom-right = mean drivers, top-left = hidden
+        variance drivers, top-right = dual-role. When ``mean_ci``/``var_ci``
+        (dicts ``{i: (lo, hi)}``) are supplied, each point becomes an ellipse
+        whose semi-axes are the CI half-widths (optionally magnified by
+        ``ci_scale`` for visibility) — a joint uncertainty region.
+
+    Args:
+        sobol_results: output of ``compute_sobol_indices`` (needs
+            ``variance_sobol`` for the variance axis; falls back to 0 otherwise).
+        variable_names: labels; default x1, x2, ...
+        mode: 'glyph' or 'plane'.
+        mean_ci, var_ci: optional ``{i: (lo, hi)}`` CIs (used in 'plane' mode).
+        use: 'first_order' or 'total_order'.
+        top_k: show only the k variables with largest S^f + S^h.
+        ci_scale: magnification for the CI ellipses in 'plane' mode (stated in
+            the legend); 1.0 = true 95% CI.
+        title, save_path: cosmetic / output.
+
+    Returns:
+        matplotlib Figure.
+    """
+    from matplotlib.patches import Ellipse
+
+    mean_first = sobol_results['mean_sobol'][use]
+    D = len(mean_first)
+    if variable_names is None:
+        variable_names = [f"$x_{{{i+1}}}$" for i in range(D)]
+
+    has_var = 'variance_sobol' in sobol_results
+    var_first = (sobol_results['variance_sobol'][use] if has_var
+                 else {i: 0.0 for i in range(D)})
+
+    idx = sorted(range(D), key=lambda i: float(mean_first.get(i, 0))
+                 + float(var_first.get(i, 0)), reverse=True)
+    if top_k is not None:
+        idx = idx[:top_k]
+
+    lvl = 'first-order' if use == 'first_order' else 'total-order'
+
+    if mode == 'plane':
+        return _ellipse_plane(idx, mean_first, var_first, variable_names,
+                              mean_ci, var_ci, ci_scale, lvl, title, save_path)
+
+    # ---- glyph mode: width = mean sensitivity, height = variance sensitivity ---
+    vals = [max(float(mean_first.get(i, 0)), float(var_first.get(i, 0)))
+            for i in idx]
+    max_val = max(vals) if vals else 1.0
+    max_val = max(max_val, 1e-6)
+    radius_max = 0.42          # largest semi-axis, in slot units
+    scale = radius_max / max_val
+    min_semi = 0.02            # keep a near-zero axis visible as a sliver
+
+    fig, ax = plt.subplots(figsize=(1.7 * len(idx) + 1.5, 4.2))
+    for slot, i in enumerate(idx):
+        sf = float(mean_first.get(i, 0.0))
+        sh = float(var_first.get(i, 0.0))
+        color = VAR_COLORS[i % len(VAR_COLORS)]
+        rx = max(scale * sf, min_semi)
+        ry = max(scale * sh, min_semi)
+        ax.add_patch(Ellipse((slot, 0), width=2 * rx, height=2 * ry,
+                             facecolor=color, edgecolor=color,
+                             alpha=0.45, linewidth=1.6))
+        ax.annotate(variable_names[i], (slot, -radius_max - 0.14),
+                    ha='center', va='top', fontsize=11, color=color,
+                    fontweight='bold')
+        ax.annotate(f"$S^f$={sf:.2f}\n$S^h$={sh:.2f}",
+                    (slot, radius_max + 0.06), ha='center', va='bottom',
+                    fontsize=7.5, color='#555555')
+
+    ax.set_xlim(-0.7, len(idx) - 0.3)
+    ax.set_ylim(-radius_max - 0.5, radius_max + 0.5)
+    ax.set_aspect('equal')
+    ax.axhline(0, color='#DDDDDD', lw=0.8, zorder=0)
+    ax.set_yticks([])
+    ax.set_xticks([])
+    for sp in ('left', 'right', 'top', 'bottom'):
+        ax.spines[sp].set_visible(False)
+    ax.set_title(title or 'Dual-sensitivity glyphs (mean vs variance)')
+    ax.text(0.5, -0.02,
+            r'width $\propto$ mean sensitivity $S^f$'
+            r'    ·    height $\propto$ variance sensitivity $S^h$',
+            transform=ax.transAxes, ha='center', va='top', fontsize=9,
+            color='#666666')
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig
+
+
+def _ellipse_plane(idx, mean_first, var_first, variable_names,
+                   mean_ci, var_ci, ci_scale, lvl, title, save_path):
+    """Quantitative (S^f, S^h) plane; ellipses = CI regions if CIs are given."""
+    from matplotlib.patches import Ellipse
+
+    min_radius = 0.010
+
+    def _half(ci, i):
+        if ci is not None and i in ci:
+            lo, hi = ci[i]
+            return max((float(hi) - float(lo)) / 2.0 * ci_scale, min_radius)
+        return min_radius
+
+    fig, ax = plt.subplots(figsize=(6.6, 6.2))
+    max_val = 0.0
+    for i in idx:
+        mx, vy = float(mean_first.get(i, 0.0)), float(var_first.get(i, 0.0))
+        max_val = max(max_val, mx, vy)
+        color = VAR_COLORS[i % len(VAR_COLORS)]
+        ax.add_patch(Ellipse((mx, vy), width=2 * _half(mean_ci, i),
+                             height=2 * _half(var_ci, i), facecolor=color,
+                             edgecolor=color, alpha=0.35, linewidth=1.4, zorder=2))
+        ax.plot(mx, vy, 'o', color=color, markersize=4, zorder=3)
+        ax.annotate(variable_names[i], (mx, vy), textcoords='offset points',
+                    xytext=(7, 6), fontsize=10, color=color,
+                    fontweight='bold', zorder=4)
+
+    hi = max(max_val * 1.2, 0.1)
+    lbl = 'equal influence' if ci_scale == 1.0 else f'equal (CI ×{ci_scale:g})'
+    ax.plot([0, hi], [0, hi], '--', color='#AAAAAA', lw=1, zorder=1, label=lbl)
+    ax.text(0.97 * hi, 0.05 * hi, 'mean\ndrivers', ha='right', va='bottom',
+            fontsize=8, color='#999999', style='italic')
+    ax.text(0.03 * hi, 0.97 * hi, 'hidden variance\ndrivers', ha='left',
+            va='top', fontsize=8, color='#999999', style='italic')
+    ax.text(0.97 * hi, 0.97 * hi, 'dual-role', ha='right', va='top',
+            fontsize=8, color='#999999', style='italic')
+
+    ax.set_xlim(-0.02 * hi, hi)
+    ax.set_ylim(-0.02 * hi, hi)
+    ax.set_aspect('equal')
+    ax.set_xlabel(f'Mean {lvl} Sobol  $S_i^f$')
+    ax.set_ylabel(f'Variance {lvl} Sobol  $S_i^h$')
+    ax.set_title(title or 'Dual-sensitivity plane (mean vs variance)')
+    ax.legend(loc='lower right', fontsize=8)
+    ax.grid(True, alpha=0.25)
 
     plt.tight_layout()
     if save_path:

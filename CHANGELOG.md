@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Ishigami benchmark** — `hifi_anova.data.generate_ishigami` (with an optional
+  heteroscedastic variant that drives the noise variance with x3) and
+  `ishigami_sobol_indices`, the closed-form ground-truth Sobol indices. Ishigami
+  is the canonical SA test case where x3 has a *zero first-order* but *non-zero
+  total-order* index (it acts only through the x1–x3 interaction). Covered by
+  `tests/test_ishigami.py` (analytic values, generator, first-order recovery,
+  and the heteroscedastic variance-driver recovery).
+- **Dual-sensitivity ellipse plot** — `analysis.visualization.plot_sensitivity_ellipses`,
+  a new visualization of the mean+variance Sobol spectrum. `mode='glyph'` draws
+  one ellipse per variable whose width ∝ mean sensitivity and height ∝ variance
+  sensitivity (shape tells the story: wide = mean driver, tall = variance
+  driver); `mode='plane'` places each variable at (S^f, S^h) with CI ellipses.
+- **`examples/run_ishigami_heteroscedastic.py`** — an end-to-end capabilities
+  showcase on a heteroscedastic Ishigami: recovers the analytic mean Sobol
+  indices, fits the variance spectrum (x3 emerges as a hidden driver),
+  rediscovers the x1–x3 interaction with the residual sieve, checks calibration,
+  bootstraps CIs for the dual spectrum, and renders the ellipse plots.
 - **`docs/CI_theory.md`** — theory note for the Sobol confidence intervals: the
   HC0 sandwich estimator, the delta method, the full-gradient derivation
   (including the denominator-coupling terms), why the own-block-only shortcut

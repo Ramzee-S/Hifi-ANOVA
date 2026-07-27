@@ -334,7 +334,10 @@ the fully analytic one-solve diagnostic pipeline.
 
 ## Roadmap
 
-- Add the Ishigami benchmark and other standard SA test functions.
+- ~~Add the Ishigami benchmark~~ Done: `hifi_anova.data.generate_ishigami` /
+  `ishigami_sobol_indices` (with a heteroscedastic variant) plus the
+  `examples/run_ishigami_heteroscedastic.py` showcase and the new
+  dual-sensitivity ellipse plot. More standard SA test functions to follow.
 - ~~Validate confidence intervals for Legendre / Haar bases.~~ Done: Monte-Carlo
   coverage is nominal (~0.95) for all three bases after the full-gradient
   delta-method fix; a coverage regression test guards it.
