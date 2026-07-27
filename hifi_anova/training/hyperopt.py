@@ -239,14 +239,14 @@ def optimize_multi_lambda(Phi: np.ndarray, y: np.ndarray,
                           strategy: str = 'variance',
                           method: str = 'gcv',
                           bounds: Tuple[float, float] = (1e-6, 1e2)) -> Dict:
-    """Optimize (lambda_1, lambda_2) jointly via GCV or evidence.
+    """Optimize (lambda_1, lambda_2) jointly via a model-selection criterion.
 
     Args:
         Phi: (N, F) full feature matrix
         y: (N,) centered targets
         D, K1, K2, P: model structure parameters
         strategy: regularization strategy
-        method: 'gcv' or 'evidence'
+        method: 'gcv', 'aic', 'bic', or 'evidence'
         bounds: search range for each lambda
 
     Returns:
@@ -277,8 +277,15 @@ def optimize_multi_lambda(Phi: np.ndarray, y: np.ndarray,
         r = evaluate(lam1, lam2)
         if method == 'gcv':
             return r['gcv']
-        else:
+        elif method == 'aic':
+            return r['aic']
+        elif method == 'bic':
+            return r['bic']
+        elif method == 'evidence':
             return -r['log_evidence']
+        raise ValueError(
+            f"Unknown method '{method}'. Choose from: 'gcv', 'aic', 'bic', 'evidence'."
+        )
 
     x0 = np.array([np.log10(0.001), np.log10(0.01)])
     log_bounds = [(np.log10(bounds[0]), np.log10(bounds[1]))] * 2

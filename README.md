@@ -88,8 +88,9 @@ For **GPU** support, install JAX per the
 [official guide](https://docs.jax.dev/en/latest/installation.html) instead of
 the CPU wheel pulled in by default.
 
-All linear algebra runs in float64. `hifi_anova.api` enables JAX x64 automatically;
-if you call lower-level functions directly, set it yourself:
+All linear algebra runs in float64. The one-call `hifi_anova(...)` enables JAX x64
+automatically (on the first call); if you call lower-level functions directly, set
+it yourself:
 
 ```python
 import jax

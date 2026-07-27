@@ -113,8 +113,9 @@ pip install -e .
 #           pip install -e ".[dev]"      # pytest
 ```
 
-All linear algebra runs in float64. `hifi_anova.api` enables JAX x64
-automatically; if you call lower-level functions directly, set it yourself:
+All linear algebra runs in float64. The one-call `hifi_anova(...)` enables JAX
+x64 automatically (on the first call); if you call lower-level functions
+directly, set it yourself:
 
 ```python
 import jax
@@ -369,7 +370,7 @@ The model is built in up to four stages. `mode` maps to a stage list
 | `'first'` | A | First-order only. |
 | `'second'` | A, B | First + second-order interactions. |
 | `'full'` | A, B, C | + residual (NN by default in this path). |
-| `'heteroscedastic'` | A, B, C, D | + input-dependent variance. |
+| `'heteroscedastic'` | A, B, D | + input-dependent variance (no NN residual). |
 | `'auto'` | grows from A | Adds the next stage while structure remains. |
 
 **Stage meanings:**
@@ -422,7 +423,7 @@ implemented (`training/regularization.py`) — four fixed and two parameterized:
 | `'smoothness'` | rate of change | `r = λ · (2πk)² / 2` | Integrated squared first derivative (Sobolev H1); the smoothing-spline penalty. |
 | `'curvature'` | curvature | `r = λ · (2πk)⁴ / 2` | Integrated squared second derivative; leaves linear effects free (cubic-spline penalty). A tiny stability ridge is added to the linear/constant term. |
 | `'sobolev[_s]'` | Sobolev H^s norm | `r = λ · (1 + (2πk)²)^s` | Smoothly interpolates between uniform (`s=0`), smoothness-like (`s=1`), and curvature-like (`s=2`). The `+1` naturally regularizes the linear term without an ad-hoc fix. |
-| `'spectral[_a]'` | frequency `k` directly | `r = λ · k^a` | Direct frequency weighting: `a=0` ≈ uniform, `a=2` ≈ smoothness, `a=4` ≈ curvature. The linear term gets a small stability ridge. |
+| `'spectral[_a]'` | frequency `k` directly | `r = λ · k^a` | Direct frequency weighting: `a=0` ≈ uniform, `a=2` ≈ smoothness, `a=4` ≈ curvature. The linear term (frequency `k=0`, which would give `λ·0^a=0`) is held at the base penalty `λ` for stability. |
 
 **Suffix syntax for the parameterized strategies.** The order/exponent is passed
 as an underscore suffix and parsed via `strategy.split('_')`:

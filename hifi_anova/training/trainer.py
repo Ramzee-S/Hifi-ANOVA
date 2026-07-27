@@ -39,7 +39,7 @@ class HiFiANOVATrainer:
         # Named modes:
         trainer = HiFiANOVATrainer({'mode': 'second', ...})     # = stages A, B
         trainer = HiFiANOVATrainer({'mode': 'full', ...})       # = stages A, B, C
-        trainer = HiFiANOVATrainer({'mode': 'heteroscedastic'}) # = stages A, B, C, D
+        trainer = HiFiANOVATrainer({'mode': 'heteroscedastic'}) # = stages A, B, D
 
         # Auto mode (decides stage-by-stage based on residual fraction):
         trainer = HiFiANOVATrainer({'mode': 'auto', 'auto_threshold': 0.01, ...})
@@ -48,7 +48,7 @@ class HiFiANOVATrainer:
         'first'           — First-order Fourier only
         'second'          — First + second-order Fourier
         'full'            — First + second + residual NN
-        'heteroscedastic' — Full model + variance decomposition
+        'heteroscedastic' — First + second + variance decomposition (no NN residual)
         'auto'            — Progressive: adds stages while residual > threshold
     """
 

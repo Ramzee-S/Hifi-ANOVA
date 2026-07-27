@@ -7,7 +7,7 @@ Modes:
   'first'            — First-order Fourier only (stages A)
   'second'           — First + second-order Fourier (stages A, B)
   'full'             — First + second + residual NN (stages A, B, C)
-  'heteroscedastic'  — Full model + variance decomposition (stages A, B, C, D)
+  'heteroscedastic'  — First + second + variance decomposition (stages A, B, D)
   'auto'             — Fit progressively, add next stage if it improves
                        validation loss beyond what noise reduction alone explains.
 
@@ -37,7 +37,7 @@ MODE_STAGES = {
     'first':            ['A'],
     'second':           ['A', 'B'],
     'full':             ['A', 'B', 'C'],
-    'heteroscedastic':  ['A', 'B', 'C', 'D'],
+    'heteroscedastic':  ['A', 'B', 'D'],
 }
 
 

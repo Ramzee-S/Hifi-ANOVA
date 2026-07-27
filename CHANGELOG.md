@@ -18,8 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `api.py` module docstring advertised `hifi_anova.load(...)`, which does not
   exist; corrected to `hifi_anova.model.io.load_model`.
+- **`mode='heteroscedastic'` no longer silently trains a black-box NN residual.**
+  It now maps to stages `['A', 'B', 'D']` (was `['A', 'B', 'C', 'D']`), so
+  selecting the heteroscedastic mode no longer auto-enables the SGD-trained MLP
+  residual — consistent with the one-call `hifi_anova(..., heteroscedastic=True)`
+  path, the worked examples, and the "NN residual is an opt-in last resort"
+  positioning in the docs. To combine a residual with the variance model, request
+  it explicitly (`hifi_anova(..., heteroscedastic=True, residual='rbf')` or
+  `stages=['A', 'B', 'C', 'D']`). Also fixes the README mode table, which already
+  listed `A, B, D`.
+- `optimize_multi_lambda` now honors `method='aic'` and `method='bic'` instead of
+  silently falling back to the evidence criterion, and raises `ValueError` on an
+  unknown `method`. This matches `optimize_multi_lambda_extended` (which delegates
+  to it for the two-lambda case) and the USER_GUIDE §10.2 claim that the four
+  methods are supported.
 
 ### Changed
+- Documentation wording fixes: JAX x64 is enabled by the one-call `hifi_anova(...)`
+  on first call (not merely by importing `hifi_anova.api`); the `spectral` penalty
+  holds the linear term at the base penalty `λ` (not "a small stability ridge").
 - Reframed the README and package descriptions to match the manuscript:
   **HiFi-ANOVA = Hoeffding Interaction–Fidelity ANOVA**. The intro now leads with
   the three contributions — the dual mean+variance Sobol spectrum, the three
