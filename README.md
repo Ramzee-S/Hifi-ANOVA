@@ -49,9 +49,10 @@ cost beyond a single ridge fit:
 - **A one-solve diagnostic suite.** From the single matrix factorization of the
   ridge fit come closed-form leave-one-out CV, residual noise estimation,
   heteroscedasticity-robust confidence intervals for the Sobol indices (sandwich
-  estimator + delta method), K-fold CV via Woodbury downdates, interaction
-  screening by residual projection, and a full regularization path with
-  sensitivity indices at every penalty level.
+  estimator + delta method; theory and coverage validation in
+  [`docs/CI_theory.md`](docs/CI_theory.md)), K-fold CV via Woodbury downdates,
+  interaction screening by residual projection, and a full regularization path
+  with sensitivity indices at every penalty level.
 
 Everything is read off analytically, with no extra model evaluations. On
 Friedman-1, first-order indices match SALib ground truth within ~0.003 mean

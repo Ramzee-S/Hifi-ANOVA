@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`docs/CI_theory.md`** — theory note for the Sobol confidence intervals: the
+  HC0 sandwich estimator, the delta method, the full-gradient derivation
+  (including the denominator-coupling terms), why the own-block-only shortcut
+  undercovers, the Monte-Carlo coverage validation across all three bases, and a
+  symbol↔code map. Linked from README and USER_GUIDE §9.4.
 - **`docs/USER_GUIDE.md`** — a comprehensive user manual: the two APIs, a full
   configuration reference (every trainer config key with type/default/effect),
   complexity modes and stages, all six regularization strategies (including the
