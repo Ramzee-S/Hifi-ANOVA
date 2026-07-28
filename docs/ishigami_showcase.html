@@ -1,161 +1,79 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>HiFi-ANOVA &mdash; Ishigami worked example</title><style>
-:root{
-  --bg:#ffffff; --fg:#1a1d24; --muted:#5c6470; --card:#f7f8fa; --border:#e4e7ec;
-  --accent:#3274A1; --accent2:#C03D3E; --code:#f0f2f5;
-  --maxw:940px;
-}
-@media (prefers-color-scheme: dark){
-  :root{--bg:#14171c; --fg:#e6e9ef; --muted:#9aa4b2; --card:#1c2027;
-        --border:#2b313b; --accent:#7fb2d8; --accent2:#e08585; --code:#1a1e25;}
-}
-:root[data-theme="light"]{--bg:#ffffff;--fg:#1a1d24;--muted:#5c6470;--card:#f7f8fa;
-  --border:#e4e7ec;--accent:#3274A1;--accent2:#C03D3E;--code:#f0f2f5;}
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>HiFi-ANOVA — Ishigami worked example</title><style>
+:root{--bg:#fff;--fg:#1a1d24;--muted:#5c6470;--card:#f7f8fa;--border:#e4e7ec;
+--accent:#3274A1;--code:#f0f2f5;--maxw:940px}
+@media (prefers-color-scheme:dark){:root{--bg:#14171c;--fg:#e6e9ef;--muted:#9aa4b2;
+--card:#1c2027;--border:#2b313b;--accent:#7fb2d8;--code:#1a1e25}}
+:root[data-theme="light"]{--bg:#fff;--fg:#1a1d24;--muted:#5c6470;--card:#f7f8fa;
+--border:#e4e7ec;--accent:#3274A1;--code:#f0f2f5}
 :root[data-theme="dark"]{--bg:#14171c;--fg:#e6e9ef;--muted:#9aa4b2;--card:#1c2027;
-  --border:#2b313b;--accent:#7fb2d8;--accent2:#e08585;--code:#1a1e25;}
+--border:#2b313b;--accent:#7fb2d8;--code:#1a1e25}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  line-height:1.6;font-size:16px}
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+line-height:1.6;font-size:16px}
 .wrap{max-width:var(--maxw);margin:0 auto;padding:2.2rem 1.2rem 4rem}
 header{border-bottom:1px solid var(--border);padding-bottom:1.4rem;margin-bottom:1.6rem}
 h1{font-size:1.9rem;line-height:1.25;margin:.2rem 0 .4rem}
 h2{font-size:1.35rem;margin:2.6rem 0 .3rem;padding-top:.6rem}
 h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:.5rem}
 .lede{color:var(--muted);font-size:1.05rem}
-p{margin:.7rem 0}
-a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-.muted{color:var(--muted)}
+p{margin:.7rem 0}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .formula{background:var(--card);border:1px solid var(--border);border-radius:10px;
-  padding:1rem 1.1rem;margin:1.1rem 0;font-size:1.05rem}
-.formula code{font-size:1.05rem}
-code,kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  background:var(--code);border:1px solid var(--border);border-radius:5px;
-  padding:.08em .4em;font-size:.9em}
+padding:1rem 1.1rem;margin:1.1rem 0;font-size:1.05rem}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+background:var(--code);border:1px solid var(--border);border-radius:5px;
+padding:.08em .4em;font-size:.9em}
 pre{background:var(--code);border:1px solid var(--border);border-radius:10px;
-  padding:1rem 1.1rem;overflow-x:auto;font-size:.86rem;line-height:1.5}
+padding:1rem 1.1rem;overflow-x:auto;font-size:.86rem;line-height:1.5}
 pre code{background:none;border:none;padding:0}
 figure{margin:1.4rem 0;background:var(--card);border:1px solid var(--border);
-  border-radius:12px;padding:1rem;overflow:hidden}
-figure img{display:block;width:100%;height:auto;max-width:100%;border-radius:6px;
-  background:#fff}
+border-radius:12px;padding:1rem;overflow:hidden}
+figure img{display:block;width:100%;height:auto;max-width:100%;border-radius:6px;background:#fff}
 figcaption{color:var(--muted);font-size:.92rem;margin-top:.7rem}
 figcaption b{color:var(--fg)}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
-.grid figure{margin:0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.grid figure{margin:0}
 @media (max-width:720px){.grid{grid-template-columns:1fr}}
 .key{background:var(--card);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;
-  padding:.7rem 1rem;margin:1.1rem 0}
-table{border-collapse:collapse;width:100%;font-size:.9rem;margin:1rem 0}
-th,td{border:1px solid var(--border);padding:.4rem .6rem;text-align:right}
-th:first-child,td:first-child{text-align:left}
-th{background:var(--card)}
+padding:.7rem 1rem;margin:1.1rem 0}
+.muted{color:var(--muted)}
 .toggle{position:fixed;top:1rem;right:1rem;background:var(--card);
-  border:1px solid var(--border);color:var(--fg);border-radius:8px;
-  padding:.35rem .7rem;cursor:pointer;font-size:.85rem}
+border:1px solid var(--border);color:var(--fg);border-radius:8px;padding:.35rem .7rem;
+cursor:pointer;font-size:.85rem}
 footer{border-top:1px solid var(--border);margin-top:3rem;padding-top:1.2rem;
-  color:var(--muted);font-size:.85rem}
+color:var(--muted);font-size:.85rem}
 </style></head><body><div class="wrap">
 <button class="toggle" title="toggle light/dark">◐ theme</button>
 <header>
 <h1>HiFi-ANOVA — a worked example on the heteroscedastic Ishigami function</h1>
-<p class="lede">A visual tour of what the toolbox produces from one fit:
-the dual mean+variance sensitivity spectrum, the learned effects, the
-regularization trade-offs, and how the fit holds up under noise.</p>
+<p class="lede">A visual tour of what the toolbox produces from one fit: the dual mean+variance sensitivity spectrum, the learned effects, the regularization trade-offs, and how the fit holds up under noise.</p>
 </header>
-
-<p>The <b>Ishigami function</b> is a classic sensitivity-analysis benchmark. We use a
-<b>heteroscedastic</b> variant — the response is noisy, and the noise level itself
-depends on an input — because it exercises every part of the toolbox at once.</p>
-
-<div class="formula">
-<code>f(x) = sin(x&#8321;) + 7&#183;sin&#178;(x&#8322;) + 0.1&#183;x&#8323;&#8308;&#183;sin(x&#8321;)</code>,
-&nbsp; x&#7522; ~ U(&#8722;&#960;, &#960;),
-&nbsp; with Gaussian noise whose std ramps <b>0.3 &#8594; 3.0</b> across x&#8323;.
-</div>
-
-<div class="key">
-Why this example is instructive — two things about <b>x&#8323;</b>:
-<ul>
-<li>It has <b>zero first-order effect</b> on the mean (it acts only through the
-x&#8321;&#8211;x&#8323; interaction) but a <b>non-zero total-order</b> effect. A method that
-reports a first-order importance for x&#8323; is picking up noise.</li>
-<li>It is a <b>hidden variance driver</b>: it carries no mean signal yet controls the
-entire noise variance &mdash; invisible to ordinary feature importance.</li>
-</ul>
-Analytic ground-truth first-order Sobol indices: <b>x&#8321;&nbsp;=&nbsp;0.314,
-x&#8322;&nbsp;=&nbsp;0.442, x&#8323;&nbsp;=&nbsp;0.000</b>; x&#8323; total-order&nbsp;=&nbsp;0.244.
-</div>
-
-<p class="muted">Everything below is produced by
-<code>python examples/run_ishigami_heteroscedastic.py</code> (7&#8239;000-point fit; all
-figures land in <code>figures/</code>).</p>
-
-
-<h2><span class="n">1</span>The dual Sobol spectrum &mdash; mean vs variance sensitivity</h2>
-<p>Because the fit is linear in the basis coefficients, sensitivity indices for both
-the conditional <b>mean</b> and the conditional <b>variance</b> are read directly off a
-single solve &mdash; one pair of numbers per variable.</p>
-
-<figure class=""><img loading="lazy" alt="Dual-sensitivity ellipse glyphs per variable" src="figures/ishigami_sensitivity_glyphs.png"><figcaption><b>Dual-sensitivity glyphs.</b> Each variable is one ellipse: <b>width &#8733; its effect on the mean</b> E[y|x], and <b>height &#8733; its effect on the variance</b> Var[y|x]. x&#8321;/x&#8322; are wide and flat (mean drivers); <b>x&#8323; is tall and narrow</b> &mdash; it barely touches the mean yet drives the entire noise variance, the hidden-driver signature. The shape tells the whole story at a glance.</figcaption></figure>
-
+<p>The <b>Ishigami function</b> is a classic sensitivity-analysis benchmark. We use a <b>heteroscedastic</b> variant — the response is noisy, and the noise level itself depends on an input — because it exercises every part of the toolbox at once.</p>
+<div class="formula"><code>f(x) = sin(x₁) + 7·sin²(x₂) + 0.1·x₃⁴·sin(x₁)</code>, &nbsp; xᵢ ~ U(−π, π), &nbsp; with Gaussian noise whose std ramps <b>0.3 → 3.0</b> across x₃.</div>
+<div class="key">Why this example is instructive — two things about <b>x₃</b>:<ul><li>It has <b>zero first-order effect</b> on the mean (it acts only through the x₁–x₃ interaction) but a <b>non-zero total-order</b> effect. A method that reports a first-order importance for x₃ is picking up noise.</li><li>It is a <b>hidden variance driver</b>: it carries no mean signal yet controls the entire noise variance — invisible to ordinary feature importance.</li></ul>Analytic ground-truth first-order Sobol indices: <b>x₁ = 0.314, x₂ = 0.442, x₃ = 0.000</b>; x₃ total-order = 0.244.</div>
+<p class="muted">Everything below is produced by <code>python examples/run_ishigami_heteroscedastic.py</code> (7 000-point fit; all figures land in <code>figures/</code>).</p>
+<h2><span class="n">1</span>The dual Sobol spectrum — mean vs variance sensitivity</h2>
+<p>Because the fit is linear in the basis coefficients, sensitivity indices for both the conditional <b>mean</b> and the conditional <b>variance</b> are read directly off a single solve — one pair of numbers per variable.</p>
+<figure><img loading="lazy" alt="Dual-sensitivity ellipse glyphs per variable" src="figures/ishigami_sensitivity_glyphs.png"><figcaption><b>Dual-sensitivity glyphs.</b> Each variable is one ellipse: <b>width ∝ its effect on the mean</b> E[y|x], and <b>height ∝ its effect on the variance</b> Var[y|x]. x₁/x₂ are wide and flat (mean drivers); <b>x₃ is tall and narrow</b> — it barely touches the mean yet drives the entire noise variance, the hidden-driver signature. The shape tells the whole story at a glance.</figcaption></figure>
 <h2><span class="n">2</span>The learned first-order effects</h2>
 <p>The fitted one-dimensional effect of each variable, in quantile space.</p>
-
-<figure class=""><img loading="lazy" alt="Learned first-order component functions" src="figures/ishigami_components.png"><figcaption>x&#8321; recovers a sine, x&#8322; a squared-sine (two humps). <b>x&#8323; is exactly flat</b> &mdash; its spurious main-effect block was removed by <code>first_order_pruning='bic'</code>, a group test that zeros an entire first-order block when the data does not support it. Plain ridge can only shrink such a block; it can never set it to zero.</figcaption></figure>
-
-<h2><span class="n">3</span>Regularization &mdash; choosing and understanding the penalty</h2>
-<p>Every quantity below comes from a single ridge factorization, so an entire
-regularization path is essentially free &mdash; no retraining.</p>
-
-<figure class=""><img loading="lazy" alt="Four-panel regularization path" src="figures/ishigami_reg_path.png"><figcaption><b>Regularization path.</b> Clockwise: the L-curve (fit vs complexity) with the GCV optimum starred; GCV &amp; evidence agreeing on &#955;; the Sobol indices at every &#955; (note x&#8323; pinned at zero throughout); and the explained-variance decomposition by interaction order.</figcaption></figure>
-<figure class=""><img loading="lazy" alt="Pareto frontier complexity vs unexplained variance" src="figures/ishigami_pareto.png"><figcaption><b>Pareto frontier.</b> Unexplained variance vs model complexity (effective degrees of freedom), colored by &#955;. The GCV optimum sits at the elbow &mdash; where extra complexity stops buying accuracy.</figcaption></figure>
-
-<h2><span class="n">4</span>How good is the fit &mdash; under noise?</h2>
-<p>With heteroscedastic noise, a prediction-vs-observation plot <i>cannot</i> collapse
-to a line: its scatter is the irreducible noise. Because the data is synthetic we
-also know the noiseless truth, so we can separate <b>mean recovery</b> from
-<b>noise</b>.</p>
-
-<div class="grid">
-<figure class=""><img loading="lazy" alt="Predicted vs observed parity" src="figures/ishigami_parity_observed.png"><figcaption><b>Predicted vs observed y.</b> Points colored by the true noise std &#963;(x). R&#178;&nbsp;=&nbsp;0.79 &mdash; <i>at the noise ceiling, not a weak fit</i>. The points that stray farthest are exactly the high-noise (yellow) ones.</figcaption></figure>
-<figure class=""><img loading="lazy" alt="Predicted vs true function parity" src="figures/ishigami_parity_truth.png"><figcaption><b>Predicted vs the true f(x).</b> A tight line, R&#178;&nbsp;=&nbsp;0.98 &mdash; the mean is recovered well; the gap in the left panel is purely noise.</figcaption></figure>
-</div>
-<figure class=""><img loading="lazy" alt="Prediction intervals widen with x3" src="figures/ishigami_intervals.png"><figcaption><b>Prediction intervals from the mean + variance model.</b> A 1-D slice (x&#8321;&nbsp;=&nbsp;0, x&#8322;&nbsp;=&nbsp;&#960;/2) so the mean is flat and only the noise changes with x&#8323;. The 95% band = mean&nbsp;&#177;&nbsp;2&#963;&#770;(x) from both models together; it widens with x&#8323; and tracks the true &#177;2&#963; (green dotted), covering the observed points.</figcaption></figure>
-<div class="grid">
-<figure class=""><img loading="lazy" alt="Transparent true vs fitted surface" src="figures/ishigami_surface.png"><figcaption><b>True vs fitted mean surface</b> (slice x&#8323;&nbsp;=&nbsp;0). The true surface (blue) and the predicted mean (orange) overlap so closely they blend.</figcaption></figure>
-<figure class=""><img loading="lazy" alt="Predicted vs true noise std" src="figures/ishigami_variance_fit.png"><figcaption><b>Variance recovery.</b> Predicted noise std &#963;&#770;(x) vs the true &#963;(x) &mdash; correlation 0.99. The model does not just predict a value, it predicts a calibrated, input-dependent uncertainty.</figcaption></figure>
-</div>
-
+<figure><img loading="lazy" alt="Learned first-order component functions" src="figures/ishigami_components.png"><figcaption>x₁ recovers a sine, x₂ a squared-sine (two humps). <b>x₃ is exactly flat</b> — its spurious main-effect block was removed by <code>first_order_pruning='bic'</code>, a group test that zeros an entire first-order block when the data does not support it. Plain ridge can only shrink such a block; it can never set it to zero.</figcaption></figure>
+<h2><span class="n">3</span>Regularization — choosing and understanding the penalty</h2>
+<p>Every quantity below comes from a single ridge factorization, so an entire regularization path is essentially free — no retraining.</p>
+<figure><img loading="lazy" alt="Four-panel regularization path" src="figures/ishigami_reg_path.png"><figcaption><b>Regularization path.</b> Clockwise: the L-curve (fit vs complexity) with the GCV optimum starred; GCV &amp; evidence agreeing on λ; the Sobol indices at every λ (note x₃ pinned at zero throughout); and the explained-variance decomposition by interaction order.</figcaption></figure>
+<figure><img loading="lazy" alt="Pareto frontier: complexity vs unexplained variance" src="figures/ishigami_pareto.png"><figcaption><b>Pareto frontier.</b> Unexplained variance vs model complexity (effective degrees of freedom), colored by λ. The GCV optimum sits at the elbow — where extra complexity stops buying accuracy.</figcaption></figure>
+<h2><span class="n">4</span>How good is the fit — under noise?</h2>
+<p>With heteroscedastic noise, a prediction-vs-observation plot <i>cannot</i> collapse to a line: its scatter is the irreducible noise. Because the data is synthetic we also know the noiseless truth, so we can separate <b>mean recovery</b> from <b>noise</b>.</p>
+<div class="grid"><figure><img loading="lazy" alt="Predicted vs observed parity" src="figures/ishigami_parity_observed.png"><figcaption>Predicted vs <b>observed</b> y — colored by the true noise std σ(x). R² = 0.79, at the noise ceiling (not a weak fit); the points that stray farthest are the high-noise ones.</figcaption></figure><figure><img loading="lazy" alt="Predicted vs true function parity" src="figures/ishigami_parity_truth.png"><figcaption>Predicted vs the <b>true</b> f(x) — a tight line, R² = 0.98. The mean is recovered well; the gap on the left is purely noise.</figcaption></figure></div>
+<figure><img loading="lazy" alt="Prediction intervals widen with x3" src="figures/ishigami_intervals.png"><figcaption><b>Prediction intervals from the mean + variance model.</b> A 1-D slice (x₁ = 0, x₂ = π/2) so the mean is flat and only the noise changes with x₃. The 95% band = mean ± 2σ̂(x) from both models together; it widens with x₃ and tracks the true ±2σ (green dotted), covering the observed points.</figcaption></figure>
+<div class="grid"><figure><img loading="lazy" alt="Transparent true vs fitted surface" src="figures/ishigami_surface.png"><figcaption><b>True vs fitted mean surface</b> (slice x₃ = 0). The true surface (blue) and the predicted mean (orange) overlap so closely they blend.</figcaption></figure><figure><img loading="lazy" alt="Predicted vs true noise std" src="figures/ishigami_variance_fit.png"><figcaption><b>Variance recovery.</b> Predicted noise std σ̂(x) vs the true σ(x) — correlation 0.99. The model does not just predict a value, it predicts a calibrated, input-dependent uncertainty.</figcaption></figure></div>
 <h2><span class="n">5</span>Verifying the fit</h2>
-<p>A single call, <code>verify_model(...)</code>, runs the diagnostic workflow
-end-to-end and confirms the fit is internally consistent before its Sobol indices
-are trusted:</p>
+<p>A single call, <code>verify_model(...)</code>, runs the diagnostic workflow end-to-end and confirms the fit is internally consistent before its Sobol indices are trusted:</p>
 <pre><code>[PASS] Sobol additivity: first+second+third+residual = 1.000 (target 1.000)
 [PASS] Sobol bounds: indices in [0,1], total-order &gt;= first-order
 [PASS] Fit quality (test R^2): R^2 = 0.802
 [PASS] Calibration (coverage): cov90=0.89 cov95=0.95 var(z)=1.07
-[PASS] Input correlation: correlation_level = 'clean'
+[PASS] Input correlation: correlation_level = &#x27;clean&#x27;
 [info] Pure-interaction variables: x3: zero first-order, nonzero total-order
   =&gt; ALL CHECKS PASSED</code></pre>
-<p>The <code>[info]</code> line is the payoff: the toolbox has correctly identified
-x&#8323; as a pure-interaction, hidden-variance variable &mdash; exactly the structure a
-single feature-importance number would miss.</p>
-
-
-<footer>
-<p>Reproduce: <code>python examples/run_ishigami_heteroscedastic.py</code>.
-See the <a href="USER_GUIDE.md">User Guide</a> for the full option reference and the
-<a href="../benchmarks/README.md">benchmark</a> to compare your own model.</p>
-<p>Documentation notice: Copyright (c) 2026 R. Sala. Draft, work in progress &mdash;
-not covered by the source-code license. See LICENSING.md.</p>
-</footer>
-</div>
-<script>
-const b=document.querySelector('.toggle');
-b.addEventListener('click',()=>{
-  const r=document.documentElement;
-  const cur=r.getAttribute('data-theme')||
-    (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
-  r.setAttribute('data-theme',cur==='dark'?'light':'dark');
-});
-</script></body></html>
+<p>The <code>[info]</code> line is the payoff: the toolbox has correctly identified x₃ as a pure-interaction, hidden-variance variable — exactly the structure a single feature-importance number would miss.</p>
+<footer><p>Reproduce: <code>python examples/run_ishigami_heteroscedastic.py</code>. See the <a href="USER_GUIDE.md">User Guide</a> for the full option reference and the <a href="../benchmarks/README.md">benchmark</a> to compare your own model.</p><p>Documentation notice: Copyright (c) 2026 R. Sala. Draft, work in progress — not covered by the source-code license. See LICENSING.md.</p></footer></div><script>const b=document.querySelector('.toggle');b.addEventListener('click',()=>{const r=document.documentElement;const c=r.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');r.setAttribute('data-theme',c==='dark'?'light':'dark');});</script></body></html>
