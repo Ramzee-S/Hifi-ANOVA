@@ -96,11 +96,7 @@ figures land in <code>figures/</code>).</p>
 the conditional <b>mean</b> and the conditional <b>variance</b> are read directly off a
 single solve &mdash; one pair of numbers per variable.</p>
 
-<figure class=""><img loading="lazy" alt="Paired mean and variance Sobol bars" src="figures/ishigami_dual_sobol.png"><figcaption><b>Dual Sobol spectrum.</b> Blue = effect on the mean E[y|x], red = effect on the variance Var[y|x]. x&#8321;/x&#8322; drive the mean; <b>x&#8323; drives the variance</b> (S&#7716;&nbsp;&#8776;&nbsp;1) while contributing almost nothing to the mean &mdash; the hidden-driver signature.</figcaption></figure>
-<div class="grid">
-<figure class=""><img loading="lazy" alt="Ellipse glyphs per variable" src="figures/ishigami_sensitivity_glyphs.png"><figcaption><b>Ellipse glyphs.</b> Each variable is one ellipse: <b>width &#8733; mean sensitivity</b>, <b>height &#8733; variance sensitivity</b>. x&#8321;/x&#8322; are wide and flat (mean drivers); x&#8323; is tall and narrow (variance driver). The shape tells the story at a glance.</figcaption></figure>
-<figure class=""><img loading="lazy" alt="Dual-sensitivity plane with CI ellipses" src="figures/ishigami_sensitivity_plane.png"><figcaption><b>Dual-sensitivity plane.</b> Each variable sits at (mean&nbsp;Sobol, variance&nbsp;Sobol); the ellipse is its bootstrap confidence region. x&#8323; lands top-left (hidden variance driver), x&#8321;/x&#8322; bottom-right (mean drivers).</figcaption></figure>
-</div>
+<figure class=""><img loading="lazy" alt="Dual-sensitivity ellipse glyphs per variable" src="figures/ishigami_sensitivity_glyphs.png"><figcaption><b>Dual-sensitivity glyphs.</b> Each variable is one ellipse: <b>width &#8733; its effect on the mean</b> E[y|x], and <b>height &#8733; its effect on the variance</b> Var[y|x]. x&#8321;/x&#8322; are wide and flat (mean drivers); <b>x&#8323; is tall and narrow</b> &mdash; it barely touches the mean yet drives the entire noise variance, the hidden-driver signature. The shape tells the whole story at a glance.</figcaption></figure>
 
 <h2><span class="n">2</span>The learned first-order effects</h2>
 <p>The fitted one-dimensional effect of each variable, in quantile space.</p>
@@ -112,10 +108,7 @@ single solve &mdash; one pair of numbers per variable.</p>
 regularization path is essentially free &mdash; no retraining.</p>
 
 <figure class=""><img loading="lazy" alt="Four-panel regularization path" src="figures/ishigami_reg_path.png"><figcaption><b>Regularization path.</b> Clockwise: the L-curve (fit vs complexity) with the GCV optimum starred; GCV &amp; evidence agreeing on &#955;; the Sobol indices at every &#955; (note x&#8323; pinned at zero throughout); and the explained-variance decomposition by interaction order.</figcaption></figure>
-<div class="grid">
 <figure class=""><img loading="lazy" alt="Pareto frontier complexity vs unexplained variance" src="figures/ishigami_pareto.png"><figcaption><b>Pareto frontier.</b> Unexplained variance vs model complexity (effective degrees of freedom), colored by &#955;. The GCV optimum sits at the elbow &mdash; where extra complexity stops buying accuracy.</figcaption></figure>
-<figure class=""><img loading="lazy" alt="Variance-model lambda_h path" src="figures/ishigami_var_reg_path.png"><figcaption><b>Variance-model path.</b> The same idea for the <i>variance</i> model: sweep the variance penalty &#955;&#8341;. x&#8323; dominates the variance spectrum across the whole range &mdash; a robust conclusion, not an artifact of one penalty.</figcaption></figure>
-</div>
 
 <h2><span class="n">4</span>How good is the fit &mdash; under noise?</h2>
 <p>With heteroscedastic noise, a prediction-vs-observation plot <i>cannot</i> collapse
@@ -127,8 +120,11 @@ also know the noiseless truth, so we can separate <b>mean recovery</b> from
 <figure class=""><img loading="lazy" alt="Predicted vs observed parity" src="figures/ishigami_parity_observed.png"><figcaption><b>Predicted vs observed y.</b> Points colored by the true noise std &#963;(x). R&#178;&nbsp;=&nbsp;0.79 &mdash; <i>at the noise ceiling, not a weak fit</i>. The points that stray farthest are exactly the high-noise (yellow) ones.</figcaption></figure>
 <figure class=""><img loading="lazy" alt="Predicted vs true function parity" src="figures/ishigami_parity_truth.png"><figcaption><b>Predicted vs the true f(x).</b> A tight line, R&#178;&nbsp;=&nbsp;0.98 &mdash; the mean is recovered well; the gap in the left panel is purely noise.</figcaption></figure>
 </div>
+<figure class=""><img loading="lazy" alt="Prediction intervals widen with x3" src="figures/ishigami_intervals.png"><figcaption><b>Prediction intervals from the mean + variance model.</b> A 1-D slice (x&#8321;&nbsp;=&nbsp;0, x&#8322;&nbsp;=&nbsp;&#960;/2) so the mean is flat and only the noise changes with x&#8323;. The 95% band = mean&nbsp;&#177;&nbsp;2&#963;&#770;(x) from both models together; it widens with x&#8323; and tracks the true &#177;2&#963; (green dotted), covering the observed points.</figcaption></figure>
+<div class="grid">
 <figure class=""><img loading="lazy" alt="Transparent true vs fitted surface" src="figures/ishigami_surface.png"><figcaption><b>True vs fitted mean surface</b> (slice x&#8323;&nbsp;=&nbsp;0). The true surface (blue) and the predicted mean (orange) overlap so closely they blend.</figcaption></figure>
 <figure class=""><img loading="lazy" alt="Predicted vs true noise std" src="figures/ishigami_variance_fit.png"><figcaption><b>Variance recovery.</b> Predicted noise std &#963;&#770;(x) vs the true &#963;(x) &mdash; correlation 0.99. The model does not just predict a value, it predicts a calibrated, input-dependent uncertainty.</figcaption></figure>
+</div>
 
 <h2><span class="n">5</span>Verifying the fit</h2>
 <p>A single call, <code>verify_model(...)</code>, runs the diagnostic workflow

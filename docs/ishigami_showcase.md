@@ -36,23 +36,13 @@ Because the fit is linear in the basis coefficients, sensitivity indices for bot
 the conditional **mean** and the conditional **variance** are read directly off a
 single solve — one pair of numbers per variable.
 
-![Dual Sobol spectrum](figures/ishigami_dual_sobol.png)
+![Dual-sensitivity glyphs](figures/ishigami_sensitivity_glyphs.png)
 
-*Blue = effect on the mean E[y|x], red = effect on the variance Var[y|x]. x₁/x₂
-drive the mean; **x₃ drives the variance** (Sʰ ≈ 1) while contributing almost
-nothing to the mean — the hidden-driver signature.*
-
-![Ellipse glyphs](figures/ishigami_sensitivity_glyphs.png)
-
-*Ellipse glyphs — each variable is one ellipse: **width ∝ mean sensitivity**,
-**height ∝ variance sensitivity**. x₁/x₂ are wide and flat (mean drivers); x₃ is
-tall and narrow (variance driver). The shape tells the story at a glance.*
-
-![Dual-sensitivity plane](figures/ishigami_sensitivity_plane.png)
-
-*Dual-sensitivity plane — each variable sits at (mean Sobol, variance Sobol); the
-ellipse is its bootstrap confidence region. x₃ lands top-left (hidden variance
-driver), x₁/x₂ bottom-right (mean drivers).*
+*Dual-sensitivity glyphs — each variable is one ellipse: **width ∝ its effect on
+the mean** E[y|x], **height ∝ its effect on the variance** Var[y|x]. x₁/x₂ are wide
+and flat (mean drivers); **x₃ is tall and narrow** — it barely touches the mean yet
+drives the entire noise variance, the hidden-driver signature. The shape tells the
+whole story at a glance.*
 
 ---
 
@@ -86,12 +76,6 @@ throughout); and the explained-variance decomposition by interaction order.*
 freedom), colored by λ. The GCV optimum sits at the elbow, where extra complexity
 stops buying accuracy.*
 
-![Variance-model path](figures/ishigami_var_reg_path.png)
-
-*Variance-model path — the same idea for the *variance* model: sweep the variance
-penalty λₕ. x₃ dominates the variance spectrum across the whole range — a robust
-conclusion, not an artifact of one penalty.*
-
 ---
 
 ## 4. How good is the fit — under noise?
@@ -100,27 +84,20 @@ With heteroscedastic noise, a prediction-vs-observation plot *cannot* collapse t
 line: its scatter is the irreducible noise. Because the data is synthetic we also
 know the noiseless truth, so we can separate **mean recovery** from **noise**.
 
-![Predicted vs observed](figures/ishigami_parity_observed.png)
+| ![Predicted vs observed](figures/ishigami_parity_observed.png) | ![Predicted vs truth](figures/ishigami_parity_truth.png) |
+|:--|:--|
+| *Predicted vs **observed** y — colored by the true noise std σ(x). R² = 0.79, at the noise ceiling (not a weak fit); the points that stray farthest are the high-noise ones.* | *Predicted vs the **true** f(x) — a tight line, R² = 0.98. The mean is recovered well; the gap on the left is purely noise.* |
 
-*Predicted vs observed y — points colored by the true noise std σ(x). R² = 0.79 —
-*at the noise ceiling, not a weak fit*. The points that stray farthest are exactly
-the high-noise (yellow) ones.*
+![Prediction intervals widen with x3](figures/ishigami_intervals.png)
 
-![Predicted vs truth](figures/ishigami_parity_truth.png)
+*Prediction intervals from the **mean + variance model** — a 1-D slice (x₁ = 0,
+x₂ = π/2) so the mean is flat and only the noise changes with x₃. The 95% band =
+mean ± 2σ̂(x) from both models together; it widens with x₃ and tracks the true ±2σ
+(green dotted), covering the observed points.*
 
-*Predicted vs the true f(x) — a tight line, R² = 0.98. The mean is recovered well;
-the gap in the previous panel is purely noise.*
-
-![True vs fitted surface](figures/ishigami_surface.png)
-
-*True vs fitted mean surface (slice x₃ = 0). The true surface (blue) and the
-predicted mean (orange) overlap so closely they blend.*
-
-![Variance recovery](figures/ishigami_variance_fit.png)
-
-*Variance recovery — predicted noise std σ̂(x) vs the true σ(x), correlation 0.99.
-The model does not just predict a value, it predicts a calibrated, input-dependent
-uncertainty.*
+| ![True vs fitted surface](figures/ishigami_surface.png) | ![Variance recovery](figures/ishigami_variance_fit.png) |
+|:--|:--|
+| *True vs fitted mean surface (slice x₃ = 0). The true surface (blue) and the predicted mean (orange) overlap so closely they blend.* | *Variance recovery — predicted noise std σ̂(x) vs the true σ(x), correlation 0.99. The model predicts a calibrated, input-dependent uncertainty.* |
 
 ---
 

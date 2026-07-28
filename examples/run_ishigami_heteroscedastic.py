@@ -149,6 +149,34 @@ def fit_diagnostics(model, transformer, seed=999):
     fig.tight_layout()
     fig.savefig('figures/ishigami_variance_fit.png', dpi=150, bbox_inches='tight')
 
+    # (4) Prediction intervals from the mean+variance model, on a clean 1-D slice.
+    # Fix x1=0 (removes the x1-x3 interaction so the mean is flat) and x2=pi/2
+    # (sin^2 = 1), leaving x3 — the variance driver — free. The band is
+    # mean +/- 2*sigma(x) from the fitted mean AND variance models together; it
+    # should widen with x3 and track the true +/-2 sigma. Points are fresh noisy
+    # samples drawn at the slice, for illustration.
+    ng = 400
+    x3g = np.linspace(-np.pi, np.pi, ng)
+    slice_grid = np.column_stack([np.zeros(ng), np.full(ng, np.pi / 2), x3g])
+    m_s, s_s = predict(slice_grid)
+    sig_true_s = 0.3 + 2.7 * ((x3g + np.pi) / (2 * np.pi))
+    f_s = 7.0  # sin(0) + 7*sin(pi/2)^2 + 0 = 7 (exactly flat)
+    y_s = f_s + sig_true_s * np.random.RandomState(0).normal(size=ng)
+    fig, ax = plt.subplots(figsize=(11, 5))
+    ax.scatter(x3g, y_s, s=10, alpha=0.35, color='gray', label='observed y')
+    ax.plot(x3g, m_s, 'b-', lw=1.8, label='predicted mean')
+    ax.fill_between(x3g, m_s - 2 * s_s, m_s + 2 * s_s, color='coral', alpha=0.35,
+                    label='predicted 95% interval')
+    ax.plot(x3g, f_s + 2 * sig_true_s, 'g:', lw=1.2, label=r'true $\pm 2\sigma(x_3)$')
+    ax.plot(x3g, f_s - 2 * sig_true_s, 'g:', lw=1.2)
+    ax.set_xlabel(r'$x_3$  (the variance driver)'); ax.set_ylabel('y')
+    ax.set_title(r'Prediction intervals from the mean+variance model '
+                 r'(slice $x_1=0,\ x_2=\pi/2$)')
+    ax.legend(loc='upper center', fontsize=8, ncol=2)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig('figures/ishigami_intervals.png', dpi=150, bbox_inches='tight')
+
     r2_obs = 1 - np.var(ye - pred) / np.var(ye)
     r2_true = 1 - np.var(f_true - pred) / np.var(f_true)
     return {'r2_observed': float(r2_obs), 'r2_true': float(r2_true), 'sigma_corr': corr}
@@ -400,6 +428,8 @@ def main():
           "surface, x3=0)")
     print("  figures/ishigami_variance_fit.png     (pred std vs true noise std; "
           f"corr={fd['sigma_corr']:.3f})")
+    print("  figures/ishigami_intervals.png        (prediction intervals widen "
+          "with x3, on a 1-D slice)")
     print("\n  Note: R2 vs observed (~0.8) is at the noise ceiling, not a weak "
           "fit — R2 vs the")
     print("  true function (~0.98) shows the mean is recovered; the gap is "
