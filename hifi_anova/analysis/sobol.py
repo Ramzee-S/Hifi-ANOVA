@@ -19,6 +19,18 @@ from ..core.gram import build_gram_matrix, build_gram_matrix_2d, build_gram_matr
 from ..core.features import basis_size
 
 
+def _block_variances(w, gram, n_blocks: int, block: int) -> np.ndarray:
+    """Batched per-block variances ``max(0, w_b^T G w_b)`` for contiguous blocks.
+
+    Replaces a Python loop of ``n_blocks`` tiny JAX quadratic forms (each of which
+    forced a device sync via ``float(...)``) with a single numpy einsum. Numerics
+    are identical to the per-block ``w_b @ G @ w_b`` up to float64 round-off.
+    """
+    W = np.asarray(w, dtype=np.float64).reshape(n_blocks, block)
+    G = np.asarray(gram, dtype=np.float64)
+    return np.maximum(0.0, np.einsum('bi,ij,bj->b', W, G, W))
+
+
 def compute_sobol_indices(model, x_data: Optional[jnp.ndarray] = None) -> dict:
     """Compute the full dual Sobol spectrum.
 
@@ -57,10 +69,9 @@ def compute_sobol_indices(model, x_data: Optional[jnp.ndarray] = None) -> dict:
             first_order_vars[i] = float(var_i)
     else:
         block1 = basis_size(K1, _il1, _bn)
+        v1 = _block_variances(w1, G1, D, block1)
         for i in range(D):
-            wi = w1[i * block1: (i + 1) * block1]
-            var_i = jnp.maximum(0.0, wi @ G1 @ wi)
-            first_order_vars[i] = float(var_i)
+            first_order_vars[i] = float(v1[i])
 
     # Second-order variances — handle mixed pairs (G_i ⊗ G_j per pair)
     second_order_vars = {}
@@ -86,11 +97,10 @@ def compute_sobol_indices(model, x_data: Optional[jnp.ndarray] = None) -> dict:
             G2 = jnp.asarray(G2, dtype=jnp.float64)
             block2 = basis_size(K2, incl_lin_2, _bn) ** 2
 
+            v2 = _block_variances(w2, G2, P, block2)
             for p in range(P):
-                wp = w2[p * block2: (p + 1) * block2]
-                var_p = jnp.maximum(0.0, wp @ G2 @ wp)
                 i, j = int(model.pair_indices[p, 0]), int(model.pair_indices[p, 1])
-                second_order_vars[(i, j)] = float(var_p)
+                second_order_vars[(i, j)] = float(v2[p])
 
     # Third-order variances
     third_order_vars = {}
@@ -103,11 +113,10 @@ def compute_sobol_indices(model, x_data: Optional[jnp.ndarray] = None) -> dict:
         block3 = basis_size(K3, incl_lin_3, _bn) ** 3
         T = model.triple_indices.shape[0]
 
+        v3 = _block_variances(w3, G3, T, block3)
         for t in range(T):
-            wt = w3[t * block3: (t + 1) * block3]
-            var_t = jnp.maximum(0.0, wt @ G3 @ wt)
             i, j, k = (int(model.triple_indices[t, l]) for l in range(3))
-            third_order_vars[(i, j, k)] = float(var_t)
+            third_order_vars[(i, j, k)] = float(v3[t])
 
     # Residual variance (empirical — works for both NN and linear residuals)
     residual_var = 0.0
@@ -167,10 +176,9 @@ def compute_sobol_indices(model, x_data: Optional[jnp.ndarray] = None) -> dict:
 
         # First-order variance
         var_h_first = {}
+        vh1 = _block_variances(wh, Gh, D, block_h)
         for i in range(D):
-            whi = wh[i * block_h: (i + 1) * block_h]
-            var_hi = jnp.maximum(0.0, whi @ Gh @ whi)
-            var_h_first[i] = float(var_hi)
+            var_h_first[i] = float(vh1[i])
 
         # Second-order variance (if present)
         var_h_second = {}
@@ -183,11 +191,10 @@ def compute_sobol_indices(model, x_data: Optional[jnp.ndarray] = None) -> dict:
             pair_idx_h = vm.pair_indices_h
             if pair_idx_h is not None:
                 Ph = pair_idx_h.shape[0]
+                vh2 = _block_variances(w2h, G2h, Ph, block_h2)
                 for p in range(Ph):
-                    wp = w2h[p * block_h2: (p + 1) * block_h2]
-                    var_p = jnp.maximum(0.0, wp @ G2h @ wp)
                     i, j = int(pair_idx_h[p, 0]), int(pair_idx_h[p, 1])
-                    var_h_second[(i, j)] = float(var_p)
+                    var_h_second[(i, j)] = float(vh2[p])
 
         # Third-order variance (if present)
         var_h_third = {}
@@ -200,11 +207,10 @@ def compute_sobol_indices(model, x_data: Optional[jnp.ndarray] = None) -> dict:
             triple_idx_h = getattr(vm, 'triple_indices_h', None)
             if triple_idx_h is not None:
                 Th = triple_idx_h.shape[0]
+                vh3 = _block_variances(w3h, G3h, Th, block_h3)
                 for t in range(Th):
-                    wt = w3h[t * block_h3: (t + 1) * block_h3]
-                    var_t = jnp.maximum(0.0, wt @ G3h @ wt)
                     i, j, k = (int(triple_idx_h[t, l]) for l in range(3))
-                    var_h_third[(i, j, k)] = float(var_t)
+                    var_h_third[(i, j, k)] = float(vh3[t])
 
         # Variance residual contribution (empirical, if present)
         var_h_residual = 0.0

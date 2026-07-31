@@ -11,7 +11,7 @@ and the staged fitter is :class:`HiFiANOVATrainer`. The one-call entry point is
     result = hifi_anova(X, y)          # one-call fit -> Sobol -> intervals
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import warnings as _warnings
 

@@ -146,11 +146,220 @@ def ridge_solve_with_diagnostics(Phi: np.ndarray, y: np.ndarray,
     }
 
 
+class RidgePathEigSolver:
+    """Evaluate ridge diagnostics for ``reg = lambda * reg_shape`` at many
+    ``lambda`` from a *single* eigendecomposition.
+
+    A regularization path (and single-scalar GCV search) solves
+    ``(Phi^T Phi + lambda * diag(reg_shape)) w = Phi^T y`` for a grid of
+    ``lambda`` with ``reg_shape`` **fixed**. Re-solving per point costs
+    ``O(F^3)`` each; this class pays one ``O(F^3)`` eigendecomposition up front
+    and then answers every ``lambda`` in ``O(F^2)`` (``O(F)`` for the scalar
+    diagnostics), reproducing :func:`ridge_solve_with_diagnostics` to
+    floating-point round-off.
+
+    Math. With ``S = diag(sqrt(reg_shape))`` and ``B = Phi S^{-1}``, let
+    ``M = B^T B = Q diag(mu) Q^T`` (symmetric eigendecomposition). Because
+    ``A(lambda) = Phi^T Phi + lambda*diag(reg_shape) = S (M + lambda I) S``,
+    every diagnostic reduces to a function of the eigenvalues ``mu`` and the
+    projected target ``c = Q^T S^{-1} Phi^T y``:
+
+    - ``w        = S^{-1} Q (c / (mu + lambda))``   (coefficients, O(F^2))
+    - ``df       = sum(mu / (mu + lambda))``        (effective dof, O(F))
+    - ``log|K|   = sum(log((mu+lambda)/lambda))``   (matches primal & dual)
+
+    ``RSS`` and the profile ``sigma^2`` are formed from the fitted values
+    ``Phi @ w`` **directly** (O(N*F)), not from an eigen-sum: near the
+    interpolation limit (``F >= N``, small ``lambda``) the eigen-sum form
+    ``||y||^2 - 2*sum(c^2/(mu+lambda)) + ...`` loses all precision to
+    cancellation, whereas ``||y - Phi w||^2`` stays accurate — and O(N*F) is
+    still far below the ``O(F^3)`` of a per-point solve, so the speedup holds.
+
+    The ``log|K|`` identity makes the profile evidence agree with the code's
+    dual-form evidence for ``F > N`` too (the ``F - N`` near-zero eigenvalues
+    contribute ``log(lambda/lambda) = 0``).
+
+    Requires ``reg_shape > 0`` strictly (needed to whiten by ``S^{-1}``). Penalty
+    shapes with exact zeros — e.g. the ``smoothness``/``curvature``/``spectral``
+    strategies leave the k=0 term unpenalized — are not supported; callers should
+    fall back to per-point solves for those.
+    """
+
+    def __init__(self, Phi: np.ndarray, y: np.ndarray, reg_shape: np.ndarray):
+        Phi = np.asarray(Phi, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        reg_shape = np.asarray(reg_shape, dtype=np.float64)
+        if not np.all(reg_shape > 0.0):
+            raise ValueError(
+                "RidgePathEigSolver requires a strictly positive reg_shape "
+                "(min={:.3e}); use per-point solves for penalty shapes with "
+                "zeros.".format(float(reg_shape.min()))
+            )
+        self.N, self.F = Phi.shape
+        self._Phi = Phi
+        self._y = y
+        self._sinv = 1.0 / np.sqrt(reg_shape)
+        B = Phi * self._sinv[None, :]              # Phi S^{-1}   (N, F)
+        M = B.T @ B                                # F x F, symmetric PSD
+        mu, Q = np.linalg.eigh(M)
+        self._mu = np.clip(mu, 0.0, None)          # kill tiny negative round-off
+        self._Q = Q
+        self._c = Q.T @ (B.T @ y)                  # Q^T S^{-1} Phi^T y   (F,)
+        self._log2pi = float(np.log(2.0 * np.pi))
+
+    def diagnostics(self, lam: float) -> Dict:
+        """Return the same dict as ``ridge_solve_with_diagnostics(Phi, y,
+        lam*reg_shape)`` for this solver's ``(Phi, y, reg_shape)``."""
+        lam = float(lam)
+        N, F = self.N, self.F
+        mu, c = self._mu, self._c
+        denom = mu + lam
+        a = c / denom
+        w = self._sinv * (self._Q @ a)             # coefficients
+
+        # RSS and profile sigma^2 from the fitted values directly (stable near
+        # the interpolation limit; matches ridge_solve_with_diagnostics).
+        resid = self._y - self._Phi @ w
+        rss = float(resid @ resid)
+        mse = rss / N
+
+        df = float(np.sum(mu / denom))
+        gcv_denom = max(1e-10, 1.0 - df / N)
+        gcv = (rss / N) / gcv_denom ** 2
+        aic = N * np.log(max(mse, 1e-15)) + 2.0 * df
+        bic = N * np.log(max(mse, 1e-15)) + np.log(N) * df
+
+        sigma2_profile = max(1e-15, float(self._y @ resid) / N)  # y^T r / N
+        logdet_K = float(np.sum(np.log(denom) - np.log(lam)))
+        log_evidence = (-N / 2.0 * np.log(sigma2_profile)
+                        - 0.5 * logdet_K
+                        - N / 2.0 * (1.0 + self._log2pi))
+
+        return {
+            'w': w,
+            'rss': rss,
+            'mse': mse,
+            'df': df,
+            'gcv': gcv,
+            'aic': aic,
+            'bic': bic,
+            'log_evidence': float(log_evidence),
+            'sigma2_ml': max(mse, 1e-15),
+        }
+
+    def criterion_and_grad(self, lam: float, method: str = 'gcv'):
+        """Closed-form model-selection criterion and its exact derivative in
+        ``lambda``, both from the eigendecomposition (no finite differences).
+
+        Returns ``(value, d value / d lambda)`` where ``value`` is a *minimization*
+        objective: the criterion itself for ``'gcv'``/``'aic'``/``'bic'`` and
+        ``-log_evidence`` for ``'evidence'``. The derivatives follow from
+        ``df(lam) = sum(mu/(mu+lam))``, ``RSS'(lam) = 2*lam*sum(c^2/(mu+lam)^3)``,
+        and ``log|K|(lam) = sum(log((mu+lam)/lam))``.
+        """
+        lam = float(lam)
+        N, F = self.N, self.F
+        mu, c = self._mu, self._c
+        denom = mu + lam
+        c2 = c * c
+
+        # RSS from the fitted values (stable); RSS' in closed form.
+        a = c / denom
+        w = self._sinv * (self._Q @ a)
+        resid = self._y - self._Phi @ w
+        rss = max(float(resid @ resid), 0.0)
+        rss_p = 2.0 * lam * float(np.sum(c2 / denom ** 3))
+
+        df = float(np.sum(mu / denom))
+        df_p = -float(np.sum(mu / denom ** 2))
+
+        m = method.lower()
+        if m == 'gcv':
+            u = rss / N
+            v = 1.0 - df / N          # gcv denominator base
+            v = v if v > 1e-10 else 1e-10   # match ridge_solve_with_diagnostics guard
+            up, vp = rss_p / N, -df_p / N
+            value = u / v ** 2
+            grad = up / v ** 2 - 2.0 * u * vp / v ** 3
+            return value, grad
+        if m in ('aic', 'bic'):
+            mse = max(rss / N, 1e-15)
+            pen = 2.0 if m == 'aic' else float(np.log(N))
+            value = N * np.log(mse) + pen * df
+            grad = N * rss_p / max(rss, 1e-15) + pen * df_p
+            return value, grad
+        if m == 'evidence':
+            P = float(self._y @ resid)                 # y^T r  (= N * profile sigma^2)
+            sigma2 = max(P / N, 1e-15)
+            logdet_K = float(np.sum(np.log(denom) - np.log(lam)))
+            log_ev = (-N / 2.0 * np.log(sigma2) - 0.5 * logdet_K
+                      - N / 2.0 * (1.0 + self._log2pi))
+            P_p = float(np.sum(c2 / denom ** 2))        # d(y^T r)/dlam
+            dlogdet_K = float(np.sum(1.0 / denom)) - F / lam
+            dlog_ev = -N / 2.0 * (P_p / max(P, 1e-15)) - 0.5 * dlogdet_K
+            return -log_ev, -dlog_ev                    # minimize -log_evidence
+        raise ValueError(
+            f"method must be 'gcv', 'aic', 'bic', or 'evidence'; got {method!r}")
+
+
+def _optimize_single_lambda_analytic(Phi, y, reg_structure, method, bounds, n_grid):
+    """Analytic-gradient scalar-lambda optimization via one eigendecomposition.
+
+    Brackets the optimum on a coarse log-lambda grid (criterion value only), then
+    refines with L-BFGS-B using the closed-form criterion gradient (chain-ruled to
+    log10 lambda). Returns the same diagnostics dict as the numeric path.
+    """
+    solver = RidgePathEigSolver(Phi, y, reg_structure)
+    log_lo, log_hi = np.log10(bounds[0]), np.log10(bounds[1])
+    ts = np.linspace(log_lo, log_hi, max(8, n_grid // 4))
+    vals = [solver.criterion_and_grad(10.0 ** t, method)[0] for t in ts]
+    t0 = float(ts[int(np.argmin(vals))])
+    ln10 = np.log(10.0)
+
+    def f_and_grad(t):
+        lam = 10.0 ** float(t[0])
+        v, dvdlam = solver.criterion_and_grad(lam, method)
+        return v, np.array([dvdlam * lam * ln10])   # chain rule d/d(log10 lam)
+
+    res = minimize(f_and_grad, x0=np.array([t0]), jac=True,
+                   method='L-BFGS-B', bounds=[(log_lo, log_hi)])
+    lam_opt = float(10.0 ** res.x[0])
+    diag = solver.diagnostics(lam_opt)
+    diag['lambda_opt'] = lam_opt
+    diag['converged'] = bool(res.success)
+    return diag
+
+
+def _optimize_single_lambda_jax(Phi, y, reg_structure, method, bounds, n_grid):
+    """JAX/AD-gradient scalar-lambda optimization.
+
+    Same structure as :func:`_optimize_single_lambda_analytic` (coarse log-lambda
+    bracket on criterion values, then one L-BFGS-B refine with an exact jacobian),
+    but the gradient is supplied by :func:`jax.grad` via
+    :mod:`hifi_anova.training.hyperopt_jax` rather than the closed-form eigen
+    formula. Unlike the analytic path this does not require ``reg_structure > 0``
+    (the evidence log-det masks the unpenalized support). Returns the same
+    diagnostics dict as the numeric/analytic paths.
+    """
+    from .hyperopt_jax import criterion_valgrad_jax, optimize_lambdas_jax
+
+    log_lo, log_hi = np.log10(bounds[0]), np.log10(bounds[1])
+    ts = np.linspace(log_lo, log_hi, max(8, n_grid // 4))
+    vals = [criterion_valgrad_jax([t], Phi, y, [reg_structure], method)[0]
+            for t in ts]
+    t0 = float(ts[int(np.argmin(vals))])
+    out = optimize_lambdas_jax(Phi, y, [reg_structure], method, bounds,
+                               x0_log=[t0], names=['_lam'])
+    out['lambda_opt'] = out.pop('_lam')
+    return out
+
+
 def optimize_single_lambda(Phi: np.ndarray, y: np.ndarray,
                            reg_structure: np.ndarray,
                            method: str = 'gcv',
                            bounds: Tuple[float, float] = (1e-6, 1e2),
-                           n_grid: int = 50) -> Dict:
+                           n_grid: int = 50,
+                           grad: str = 'numeric') -> Dict:
     """Find optimal scalar lambda for R = lambda * diag(reg_structure).
 
     Uses grid search on log-scale followed by refinement.
@@ -165,6 +374,16 @@ def optimize_single_lambda(Phi: np.ndarray, y: np.ndarray,
         method: 'gcv', 'evidence', 'aic', or 'bic'
         bounds: search range for lambda
         n_grid: number of grid points
+        grad: gradient mode for the refinement step.
+            'numeric' (default): derivative-free `minimize_scalar` (unchanged).
+            'analytic': use closed-form criterion gradients (:class:`RidgePathEigSolver`)
+                via a single eigendecomposition — one L-BFGS-B refine with exact
+                jacobian instead of many finite-difference criterion evaluations.
+            'jax': same objective, gradient by autodiff (:func:`jax.grad`,
+                :mod:`hifi_anova.training.hyperopt_jax`). Matches 'analytic' to
+                ~1e-10; does not require a strictly positive shape.
+            'auto': 'analytic' when the penalty shape is strictly positive and
+                well conditioned, else 'numeric'.
 
     Returns:
         Dict with lambda_opt and diagnostics at the optimum.
@@ -173,6 +392,23 @@ def optimize_single_lambda(Phi: np.ndarray, y: np.ndarray,
     y = np.asarray(y, dtype=np.float64)
     reg_structure = np.asarray(reg_structure, dtype=np.float64)
     N, F = Phi.shape
+
+    if grad not in ('numeric', 'analytic', 'auto', 'jax'):
+        raise ValueError(
+            f"grad must be 'numeric'/'analytic'/'auto'/'jax'; got {grad!r}")
+    if grad == 'jax':
+        return _optimize_single_lambda_jax(
+            Phi, y, reg_structure, method, bounds, n_grid)
+    _rs_min = float(reg_structure.min()) if reg_structure.size else 0.0
+    _well_cond = _rs_min > 0.0 and float(reg_structure.max() / _rs_min) < 1e8
+    _use_analytic = (grad == 'analytic' or (grad == 'auto' and _well_cond))
+    if grad == 'analytic' and _rs_min <= 0.0:
+        raise ValueError(
+            "grad='analytic' needs a strictly positive reg_structure "
+            f"(min={_rs_min:.3e}); use grad='numeric' or 'auto'.")
+    if _use_analytic:
+        return _optimize_single_lambda_analytic(
+            Phi, y, reg_structure, method, bounds, n_grid)
 
     # When F > N, evidence optimization is expensive (N x N system per lambda)
     # and can over-regularize. Fall back to GCV with a warning.
@@ -234,11 +470,125 @@ def optimize_single_lambda(Phi: np.ndarray, y: np.ndarray,
     return final
 
 
+def _criterion_valgrad_multi(Phi, C, b, y, shapes, sizes, loglams, method):
+    """Model-selection criterion value + gradient w.r.t. log10(lambda) for
+    independent per-block lambdas, from ONE factorization of A.
+
+    reg = sum_k (10**loglams[k]) * shapes[k]; A = C + diag(reg). Using
+    U = A^{-1}: df = tr(UC); d(df)/dlam_k = -diag(UCU) . shape_k;
+    RSS'(lam_k) = 2 * shape_k . (w * (U (reg*w))); d(y^T r)/dlam_k = shape_k . w^2;
+    d(log|A|)/dlam_k = diag(U) . shape_k; d(log|R|)/dlam_k = sizes[k]/lam_k.
+    Returns (value, grad) with `value` a minimization objective (-log_evidence for
+    'evidence') and `grad` the derivative w.r.t. each log10(lambda_k).
+    """
+    N, F = Phi.shape
+    K = len(shapes)
+    lambdas = np.array([10.0 ** float(t) for t in loglams])
+    reg = np.zeros(F)
+    for k in range(K):
+        reg = reg + lambdas[k] * shapes[k]
+    A = C + np.diag(reg)
+    U = np.linalg.inv(A)
+    w = U @ b
+    resid = y - Phi @ w
+    rss = max(float(resid @ resid), 0.0)
+    df = float(np.sum(U * C))                       # tr(U C)
+    UC = U @ C
+    diagB = np.einsum('jq,jq->j', UC, U)            # diag(U C U)
+    t_vec = U @ (reg * w)
+    wt = w * t_vec
+    w2 = w * w
+    diagU = np.diag(U)
+
+    rss_p = np.array([2.0 * float(shapes[k] @ wt) for k in range(K)])
+    df_p = np.array([-float(diagB @ shapes[k]) for k in range(K)])
+    ln10 = np.log(10.0)
+
+    m = method.lower()
+    if m == 'gcv':
+        u = rss / N
+        v = max(1e-10, 1.0 - df / N)
+        val = u / v ** 2
+        up, vp = rss_p / N, -df_p / N
+        glin = up / v ** 2 - 2.0 * u * vp / v ** 3
+    elif m in ('aic', 'bic'):
+        mse = max(rss / N, 1e-15)
+        pen = 2.0 if m == 'aic' else float(np.log(N))
+        val = N * np.log(mse) + pen * df
+        glin = N * rss_p / max(rss, 1e-15) + pen * df_p
+    elif m == 'evidence':
+        P = float(y @ resid)
+        sigma2 = max(P / N, 1e-15)
+        sign, logdetA = np.linalg.slogdet(A)
+        pos = reg[reg > 1e-15]
+        logdetR = float(np.sum(np.log(pos))) if pos.size else 0.0
+        logdetK = logdetA - logdetR
+        val = -(-N / 2.0 * np.log(sigma2) - 0.5 * logdetK
+                - N / 2.0 * (1.0 + float(np.log(2 * np.pi))))
+        P_p = np.array([float(shapes[k] @ w2) for k in range(K)])
+        logA_p = np.array([float(diagU @ shapes[k]) for k in range(K)])
+        logR_p = np.array([sizes[k] / lambdas[k] for k in range(K)])
+        dlog_ev = -N / 2.0 * (P_p / max(P, 1e-15)) - 0.5 * (logA_p - logR_p)
+        glin = -dlog_ev
+    else:
+        raise ValueError(
+            f"method must be 'gcv', 'aic', 'bic', or 'evidence'; got {method!r}")
+
+    grad_log = glin * lambdas * ln10                # chain rule d/d(log10 lam)
+    return float(val), grad_log
+
+
+def _optimize_lambdas_analytic(Phi, y, shapes, method, bounds, x0_log, names):
+    """Analytic-gradient optimization of independent per-block lambdas.
+
+    `shapes[k]` are disjoint-support penalty shapes (reg = sum_k lam_k*shapes[k]).
+    Refines from `x0_log` (log10) with L-BFGS-B using the exact jacobian, then
+    returns ridge_solve_with_diagnostics at the optimum plus `names[k]` lambdas.
+    """
+    Phi = np.asarray(Phi, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    shapes = [np.asarray(s, dtype=np.float64) for s in shapes]
+    sizes = [int(np.sum(s > 0)) for s in shapes]
+    C = Phi.T @ Phi
+    b = Phi.T @ y
+    log_bounds = [(np.log10(bounds[0]), np.log10(bounds[1]))] * len(shapes)
+
+    res = minimize(
+        lambda t: _criterion_valgrad_multi(Phi, C, b, y, shapes, sizes, t, method),
+        x0=np.asarray(x0_log, dtype=np.float64), jac=True,
+        method='L-BFGS-B', bounds=log_bounds)
+
+    lam_opt = [float(10.0 ** t) for t in res.x]
+    reg = np.zeros(Phi.shape[1])
+    for k in range(len(shapes)):
+        reg = reg + lam_opt[k] * shapes[k]
+    final = ridge_solve_with_diagnostics(Phi, y, reg)
+    for k, nm in enumerate(names):
+        final[nm] = lam_opt[k]
+    final['converged'] = bool(res.success)
+    return final
+
+
+def _resolve_lambda_optimizer(grad):
+    """Return the per-block-lambda optimizer for a ``grad`` mode.
+
+    ``'analytic'``/``'auto'`` → the closed-form-gradient optimizer;
+    ``'jax'`` → the autodiff-gradient optimizer (lazily imported so the default
+    numpy-only path never loads JAX). Both share the signature
+    ``(Phi, y, shapes, method, bounds, x0_log, names)``.
+    """
+    if grad == 'jax':
+        from .hyperopt_jax import optimize_lambdas_jax
+        return optimize_lambdas_jax
+    return _optimize_lambdas_analytic
+
+
 def optimize_multi_lambda(Phi: np.ndarray, y: np.ndarray,
                           D: int, K1: int, K2: int = 0, P: int = 0,
                           strategy: str = 'variance',
                           method: str = 'gcv',
-                          bounds: Tuple[float, float] = (1e-6, 1e2)) -> Dict:
+                          bounds: Tuple[float, float] = (1e-6, 1e2),
+                          grad: str = 'numeric') -> Dict:
     """Optimize (lambda_1, lambda_2) jointly via a model-selection criterion.
 
     Args:
@@ -248,12 +598,19 @@ def optimize_multi_lambda(Phi: np.ndarray, y: np.ndarray,
         strategy: regularization strategy
         method: 'gcv', 'aic', 'bic', or 'evidence'
         bounds: search range for each lambda
+        grad: 'numeric' (default; finite-difference L-BFGS-B, unchanged),
+            'analytic'/'auto' (closed-form joint gradient from one A-factorization
+            per L-BFGS-B evaluation — exact jacobian, fewer solves), or 'jax'
+            (same objective, gradient by autodiff; matches 'analytic' to ~1e-10).
 
     Returns:
         Dict with optimal lambdas and diagnostics.
     """
     from .regularization import build_regularization_vector
 
+    if grad not in ('numeric', 'analytic', 'auto', 'jax'):
+        raise ValueError(
+            f"grad must be 'numeric'/'analytic'/'auto'/'jax'; got {grad!r}")
     Phi_np = np.asarray(Phi, dtype=np.float64)
     y_np = np.asarray(y, dtype=np.float64)
     N, F = Phi_np.shape
@@ -263,7 +620,19 @@ def optimize_multi_lambda(Phi: np.ndarray, y: np.ndarray,
             build_regularization_vector(D, K1, 0, 0, strategy, 1.0, 1.0),
             dtype=np.float64
         )
-        return optimize_single_lambda(Phi_np, y_np, reg_struct, method, bounds)
+        return optimize_single_lambda(Phi_np, y_np, reg_struct, method, bounds,
+                                      grad=grad)
+
+    if grad in ('analytic', 'auto', 'jax'):
+        shape1 = np.asarray(build_regularization_vector(
+            D, K1, K2, P, strategy, 1.0, 0.0), dtype=np.float64)
+        shape2 = np.asarray(build_regularization_vector(
+            D, K1, K2, P, strategy, 0.0, 1.0), dtype=np.float64)
+        _opt = _resolve_lambda_optimizer(grad)
+        return _opt(
+            Phi_np, y_np, [shape1, shape2], method, bounds,
+            x0_log=[np.log10(0.001), np.log10(0.01)],
+            names=['lambda_order1', 'lambda_order2'])
 
     def evaluate(lam1, lam2):
         reg = np.asarray(
@@ -310,6 +679,7 @@ def optimize_multi_lambda_extended(
     method: str = 'gcv',
     bounds: Tuple[float, float] = (1e-6, 1e2),
     verbose: bool = True,
+    grad: str = 'numeric',
 ) -> Dict:
     """Optimize (lambda1, lambda2, lambda3, lambda_res) jointly via GCV.
 
@@ -329,12 +699,17 @@ def optimize_multi_lambda_extended(
         method: 'gcv', 'aic', 'bic', or 'evidence'
         bounds: search range per lambda
         verbose: print optimization progress
+        grad: 'numeric' (default), 'analytic'/'auto', or 'jax' — gradient mode for
+            the active-lambda optimization (see :func:`optimize_multi_lambda`).
 
     Returns:
         Dict with optimal lambdas and diagnostics at the optimum.
     """
     from .regularization import build_regularization_vector
 
+    if grad not in ('numeric', 'analytic', 'auto', 'jax'):
+        raise ValueError(
+            f"grad must be 'numeric'/'analytic'/'auto'/'jax'; got {grad!r}")
     Phi_np = np.asarray(Phi, dtype=np.float64)
     y_np = np.asarray(y, dtype=np.float64)
     N, F = Phi_np.shape
@@ -356,13 +731,14 @@ def optimize_multi_lambda_extended(
             build_regularization_vector(D, K1, 0, 0, strategy, 1.0, 1.0),
             dtype=np.float64
         )
-        result = optimize_single_lambda(Phi_np, y_np, reg_struct, method, bounds)
+        result = optimize_single_lambda(Phi_np, y_np, reg_struct, method, bounds,
+                                        grad=grad)
         result['lambda_order1'] = result['lambda_opt']
         return result
 
     if n_active == 2 and 'lambda_residual' not in active_names:
         return optimize_multi_lambda(Phi_np, y_np, D, K1, K2, P,
-                                     strategy, method, bounds)
+                                     strategy, method, bounds, grad=grad)
 
     # --- General n-lambda optimization ---
     # Default initial values (log10 scale)
@@ -372,6 +748,24 @@ def optimize_multi_lambda_extended(
         'lambda_order3': -1.0,   # 0.1
         'lambda_residual': 0.0,  # 1.0
     }
+
+    if grad in ('analytic', 'auto', 'jax'):
+        # One disjoint-support penalty shape per active lambda (unit lambda on
+        # that order, zero elsewhere), then reg = sum_k lam_k * shape_k.
+        def _unit_shape(name):
+            u = {n: (1.0 if n == name else 0.0) for n in
+                 ('lambda_order1', 'lambda_order2', 'lambda_order3', 'lambda_residual')}
+            return np.asarray(build_regularization_vector(
+                D, K1, K2, P, strategy,
+                u['lambda_order1'], u['lambda_order2'],
+                K3=K3, T=T, lambda_order3=u['lambda_order3'],
+                M_residual=M_residual, lambda_residual=u['lambda_residual']),
+                dtype=np.float64)
+        shapes = [_unit_shape(nm) for nm in active_names]
+        _opt = _resolve_lambda_optimizer(grad)
+        return _opt(
+            Phi_np, y_np, shapes, method, bounds,
+            x0_log=[defaults[nm] for nm in active_names], names=active_names)
 
     x0 = np.array([defaults[name] for name in active_names])
     log_bounds = [(np.log10(bounds[0]), np.log10(bounds[1]))] * n_active

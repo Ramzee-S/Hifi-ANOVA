@@ -284,45 +284,11 @@ class HiFiANOVATrainer:
                                 jnp.asarray(w1_pruned, dtype=jnp.float32))
 
         # ======== Pair candidate generation for Stage B ========
-        # Two-step pipeline:
-        #   1. Select active variables (variable_selection criterion)
-        #   2. Generate candidate pairs (pair_candidates heuristic)
-        # After fitting, optional pair_pruning removes inactive pairs.
-        from .pairs_import_helper import _resolve_pair_manager
-        N_train = x_train.shape[0]
-
-        if variable_selection is not None and pair_candidates is not None:
-            # New-style config: explicit separation of variable selection
-            # and candidate generation
-            from .selection import select_active_variables_principled
-            active_vars, var_sel_info = select_active_variables_principled(
-                np.asarray(phi1_train, dtype=np.float64),
-                np.asarray(y_centered, dtype=np.float64),
-                D, K1, np.asarray(reg1, dtype=np.float64),
-                method=variable_selection, verbose=True,
-            )
-            if max_pair_variables is not None and len(active_vars) > max_pair_variables:
-                active_vars = active_vars[:max_pair_variables]
-            results['variable_selection'] = var_sel_info
-
-            pair_mgr = PairManager(D, active_variables=active_vars,
-                                    selection_mode=pair_candidates)
-            if True:  # verbose
-                from math import comb
-                F_est = D * basis_size(K1, include_linear_1, basis_name) + pair_mgr.P * basis_size(K2, include_linear_2, basis_name)**2
-                print(f"  Variable selection ({variable_selection}): "
-                      f"{len(active_vars)}/{D} active")
-                print(f"  Pair candidates ({pair_candidates}): "
-                      f"{pair_mgr.P} pairs (vs {comb(D,2)} all), F={F_est}")
-        else:
-            # Legacy config: pair_selection handles everything
-            pair_mgr = _resolve_pair_manager(
-                pair_selection, D, K1, K2, G1, w1, N_train,
-                pair_threshold, max_pair_variables,
-                Phi1=phi1_train, y_centered=y_centered, reg1=reg1,
-                strategy=strategy, lambda1=lambda1,
-                include_linear_1=include_linear_1, include_linear_2=include_linear_2,
-                basis_name=basis_name)
+        pair_mgr = self._generate_pair_candidates(
+            x_train, phi1_train, y_centered, w1, reg1, D, K1, K2, G1,
+            variable_selection, pair_candidates, pair_selection,
+            max_pair_variables, pair_threshold, strategy, lambda1,
+            include_linear_1, include_linear_2, basis_name, results)
 
         # ======== Stage B: First + Second order ========
         if 'B' in stages or ('D' in stages and K2 > 0):
@@ -486,7 +452,7 @@ class HiFiANOVATrainer:
                     _temp_model = HiFiANOVA(
                         mean_model=MeanModel(
                             f0=jnp.array(f0, dtype=jnp.float32),
-                            w1=jnp.array(w_all[:D * _bs(K1, include_linear_1, basis_name)], dtype=jnp.float32),
+                            w1=jnp.array(w_all[:D * basis_size(K1, include_linear_1, basis_name)], dtype=jnp.float32),
                             w2=jnp.array([], dtype=jnp.float32),
                             K1=K1, K2=0, D=D,
                             include_linear_1=include_linear_1, basis_name=basis_name,
@@ -680,58 +646,8 @@ class HiFiANOVATrainer:
 
         # ======== Stage C: Residual (Linear or NN) ========
         if 'C' in stages:
-            # Support both old config key (residual_nn) and new (residual)
-            residual_cfg = cfg.get('residual', cfg.get('residual_nn', {}))
-            residual_type = residual_cfg.get('type', 'nn')
-
-            # Backward compat: old config uses 'enabled' flag for NN
-            if residual_type == 'nn' and not residual_cfg.get('enabled', False):
-                pass  # Skip Stage C if NN not enabled
-            elif residual_type in ('rbf', 'rff', 'nystrom'):
-                # === ANALYTIC PIPELINE (linear residual) ===
-                print(f"=== Stage C: Linear residual ({residual_type}) ===")
-                from .analytic_residual import fit_linear_residual
-
-                key, subkey = jax.random.split(key)
-                lambda_res = residual_cfg.get('lambda_residual',
-                             cfg.get('lambda_residual', 1.0))
-
-                model, stage_c_results = fit_linear_residual(
-                    model, x_train, y_train, x_val, y_val,
-                    residual_type=residual_type,
-                    residual_config=residual_cfg,
-                    lambda_residual=lambda_res,
-                    key=subkey,
-                )
-                results['stage_C'] = stage_c_results
-
-            elif residual_type == 'nn' and residual_cfg.get('enabled', False):
-                # === SGD PIPELINE (NN residual, unchanged) ===
-                print("=== Stage C: Residual NN ===")
-                from .sgd import train_residual_nn
-
-                key, subkey = jax.random.split(key)
-                hidden_dims = residual_cfg.get('hidden_dims', [256, 256, 256])
-                nn = create_residual_mlp(D, hidden_dims, subkey)
-
-                model = eqx.tree_at(lambda m: m.residual_net, model, nn,
-                                is_leaf=lambda x: x is None)
-
-                model = train_residual_nn(
-                    model, x_train, y_train, x_val, y_val,
-                    lr=residual_cfg.get('lr', 0.001),
-                    weight_decay=residual_cfg.get('weight_decay', 0.0001),
-                    epochs=residual_cfg.get('epochs', 200),
-                    batch_size=residual_cfg.get('batch_size', 512),
-                    patience=residual_cfg.get('patience', 20),
-                    key=subkey,
-                )
-
-                # Evaluate Stage C
-                pred_val_c = model.predict_mean_only(x_val)
-                rmse_val_c = float(jnp.sqrt(jnp.mean((y_val - pred_val_c) ** 2)))
-                results['stage_C'] = {'rmse_val': rmse_val_c}
-                print(f"  RMSE val: {rmse_val_c:.4f}")
+            model, key = self._fit_stage_c(
+                model, x_train, y_train, x_val, y_val, key, cfg, D, results)
 
         # Auto mode: decide whether to add stage D (heteroscedastic)
         if auto_mode and 'D' not in stages:
@@ -782,6 +698,136 @@ class HiFiANOVATrainer:
                                 jnp.asarray(w1_cur, dtype=jnp.float32))
 
         return model, results
+
+    def _generate_pair_candidates(self, x_train, phi1_train, y_centered,
+                                 w1, reg1, D, K1, K2, G1,
+                                 variable_selection, pair_candidates,
+                                 pair_selection, max_pair_variables,
+                                 pair_threshold, strategy, lambda1,
+                                 include_linear_1, include_linear_2,
+                                 basis_name, results):
+        """Select active variables and generate Stage-B candidate pairs.
+
+        Extracted verbatim from ``fit`` (behavior-preserving). Returns the
+        PairManager; records variable-selection diagnostics in ``results``.
+        """
+        # ======== Pair candidate generation for Stage B ========
+        # Two-step pipeline:
+        #   1. Select active variables (variable_selection criterion)
+        #   2. Generate candidate pairs (pair_candidates heuristic)
+        # After fitting, optional pair_pruning removes inactive pairs.
+        from .pairs_import_helper import _resolve_pair_manager
+        N_train = x_train.shape[0]
+
+        if variable_selection is not None and pair_candidates is not None:
+            # New-style config: explicit separation of variable selection
+            # and candidate generation
+            from .selection import select_active_variables_principled
+            active_vars, var_sel_info = select_active_variables_principled(
+                np.asarray(phi1_train, dtype=np.float64),
+                np.asarray(y_centered, dtype=np.float64),
+                D, K1, np.asarray(reg1, dtype=np.float64),
+                method=variable_selection, verbose=True,
+            )
+            if max_pair_variables is not None and len(active_vars) > max_pair_variables:
+                active_vars = active_vars[:max_pair_variables]
+            results['variable_selection'] = var_sel_info
+
+            pair_mgr = PairManager(D, active_variables=active_vars,
+                                    selection_mode=pair_candidates)
+            if True:  # verbose
+                from math import comb
+                F_est = D * basis_size(K1, include_linear_1, basis_name) + pair_mgr.P * basis_size(K2, include_linear_2, basis_name)**2
+                print(f"  Variable selection ({variable_selection}): "
+                      f"{len(active_vars)}/{D} active")
+                print(f"  Pair candidates ({pair_candidates}): "
+                      f"{pair_mgr.P} pairs (vs {comb(D,2)} all), F={F_est}")
+        else:
+            # Legacy config: pair_selection handles everything
+            pair_mgr = _resolve_pair_manager(
+                pair_selection, D, K1, K2, G1, w1, N_train,
+                pair_threshold, max_pair_variables,
+                Phi1=phi1_train, y_centered=y_centered, reg1=reg1,
+                strategy=strategy, lambda1=lambda1,
+                include_linear_1=include_linear_1, include_linear_2=include_linear_2,
+                basis_name=basis_name)
+        return pair_mgr
+
+    def _fit_stage_c(self, model, x_train, y_train, x_val, y_val, key, cfg,
+                     D, results):
+        """Stage C: fit a residual model (linear RBF/RFF/Nystrom, or NN).
+
+        Extracted verbatim from ``fit`` (behavior-preserving). Returns the
+        updated model and PRNG key; records Stage-C diagnostics in
+        ``results`` in place.
+        """
+        # Support both old config key (residual_nn) and new (residual)
+        residual_cfg = cfg.get('residual', cfg.get('residual_nn', {}))
+        # A bare string (e.g. residual='rbf') is shorthand for {'type': ...}.
+        if isinstance(residual_cfg, str):
+            residual_cfg = {'type': residual_cfg}
+        residual_type = residual_cfg.get('type', 'nn')
+
+        # Fail loudly on an unknown residual type: otherwise Stage C would
+        # silently no-op (no branch matches) and the user would get a model
+        # with no residual while believing one was fitted.
+        KNOWN_RESIDUAL_TYPES = ('nn', 'rbf', 'rff', 'nystrom')
+        if residual_type not in KNOWN_RESIDUAL_TYPES:
+            raise ValueError(
+                f"Unknown residual type {residual_type!r}; expected one of "
+                f"{KNOWN_RESIDUAL_TYPES}. Check the 'residual' config "
+                f"(got {residual_cfg!r})."
+            )
+
+        # Backward compat: old config uses 'enabled' flag for NN
+        if residual_type == 'nn' and not residual_cfg.get('enabled', False):
+            pass  # Skip Stage C if NN not enabled
+        elif residual_type in ('rbf', 'rff', 'nystrom'):
+            # === ANALYTIC PIPELINE (linear residual) ===
+            print(f"=== Stage C: Linear residual ({residual_type}) ===")
+            from .analytic_residual import fit_linear_residual
+
+            key, subkey = jax.random.split(key)
+            lambda_res = residual_cfg.get('lambda_residual',
+                         cfg.get('lambda_residual', 1.0))
+
+            model, stage_c_results = fit_linear_residual(
+                model, x_train, y_train, x_val, y_val,
+                residual_type=residual_type,
+                residual_config=residual_cfg,
+                lambda_residual=lambda_res,
+                key=subkey,
+            )
+            results['stage_C'] = stage_c_results
+
+        elif residual_type == 'nn' and residual_cfg.get('enabled', False):
+            # === SGD PIPELINE (NN residual, unchanged) ===
+            print("=== Stage C: Residual NN ===")
+            from .sgd import train_residual_nn
+
+            key, subkey = jax.random.split(key)
+            hidden_dims = residual_cfg.get('hidden_dims', [256, 256, 256])
+            nn = create_residual_mlp(D, hidden_dims, subkey)
+
+            model = eqx.tree_at(lambda m: m.residual_net, model, nn,
+                            is_leaf=lambda x: x is None)
+
+            model = train_residual_nn(
+                model, x_train, y_train, x_val, y_val,
+                lr=residual_cfg.get('lr', 0.001),
+                weight_decay=residual_cfg.get('weight_decay', 0.0001),
+                epochs=residual_cfg.get('epochs', 200),
+                batch_size=residual_cfg.get('batch_size', 512),
+                patience=residual_cfg.get('patience', 20),
+                key=subkey,
+            )
+
+            # Evaluate Stage C
+            pred_val_c = model.predict_mean_only(x_val)
+            rmse_val_c = float(jnp.sqrt(jnp.mean((y_val - pred_val_c) ** 2)))
+            results['stage_C'] = {'rmse_val': rmse_val_c}
+            print(f"  RMSE val: {rmse_val_c:.4f}")
+        return model, key
 
     # ================================================================
     # Mixed per-variable basis path
@@ -1206,6 +1252,12 @@ class HiFiANOVATrainer:
         w_h = jnp.zeros(Fh_total, dtype=jnp.float64)
 
         prev_loss = float('inf')
+
+        # Initialize the log-variance intercept so `h0` is always bound before
+        # the outer loop's `h0_init if outer == 0 else h0` could read it. Under
+        # valid configs (max_outer >= 1) outer==0 uses h0_init and this is a
+        # no-op; it removes the read-before-assignment that static analysis flags.
+        h0 = h0_init
 
         for outer in range(max_outer):
             # --- Variance update (Newton on augmented features) ---

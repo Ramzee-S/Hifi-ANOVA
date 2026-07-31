@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from ..core.gram import build_gram_matrix, build_gram_matrix_2d, build_gram_matrix_3d
 from ..core.features import build_first_order_features, build_second_order_features, basis_size
 from ..core.pairs import PairManager
-from ..training.hyperopt import ridge_solve_with_diagnostics
+from ..training.hyperopt import ridge_solve_with_diagnostics, RidgePathEigSolver
 from ..training.regularization import build_regularization_vector
 
 
@@ -38,6 +38,7 @@ class RegPathResult:
     w_norm: np.ndarray              # (n_lambda,) ||w||^2
     lambda_gcv_opt: float           # GCV-optimal lambda
     lambda_evidence_opt: float      # evidence-optimal lambda
+    solver_used: str = 'solve'      # 'eig' (one eigendecomp) or 'solve' (per-lambda)
 
 
 def compute_reg_path(
@@ -62,6 +63,7 @@ def compute_reg_path(
     include_linear_2: bool = True,
     include_linear_3: bool = True,
     basis_name: str = 'fourier',
+    solver: str = 'auto',
 ) -> RegPathResult:
     """Compute the full regularization path with third-order and residual.
 
@@ -69,6 +71,24 @@ def compute_reg_path(
       lambda_2 = lambda_ratio * lambda_1
       lambda_3 = lambda_ratio_3 * lambda_1
       lambda_res = lambda_ratio_res * lambda_1
+
+    Because every lambda scales proportionally with lambda_1, the penalty is
+    ``lambda_1 * reg_shape`` for a fixed ``reg_shape``. The whole path can then be
+    computed from a **single eigendecomposition** instead of one ridge solve per
+    grid point — typically ~20x faster (see :class:`RidgePathEigSolver`).
+    ``solver`` controls this:
+      - ``'auto'``  (default): use the eigendecomposition when it is both
+        applicable (strictly positive shape, all ``lambda*reg_shape`` above the
+        evidence log-det threshold) **and** well conditioned; otherwise fall back
+        to the exact per-lambda solve. High-dynamic-range penalties such as
+        ``curvature`` (weights spanning ``(2*pi*k)^4``) whiten into an
+        ill-conditioned eigenproblem, so ``auto`` keeps the exact solve for them.
+      - ``'eig'``:   force the fast path where mathematically valid (raises only
+        for non-positive shapes / sub-threshold penalties). For badly-scaled
+        penalties it still runs but agrees with the solve to ~1e-6 rather than
+        ~1e-13 — fine for the diagnostic, but ``auto`` avoids it.
+      - ``'solve'``: force the original per-lambda solve (always exact).
+    The chosen path is recorded in ``RegPathResult.solver_used``.
 
     Args:
         Phi: (N, F) full feature matrix [Phi1 | Phi2 | Phi3 | Z_proj]
@@ -117,6 +137,48 @@ def compute_reg_path(
     lambdas = np.logspace(np.log10(lambda_range[0]),
                           np.log10(lambda_range[1]), n_lambdas)
 
+    # Penalty shape r0: reg(lambda_1) == lambda_1 * r0, since every order's
+    # lambda scales proportionally with lambda_1 and build_regularization_vector
+    # is linear in each. When r0 > 0 strictly, one eigendecomposition answers the
+    # whole grid (see RidgePathEigSolver); otherwise we solve per lambda.
+    reg_shape = np.asarray(
+        build_regularization_vector(
+            D, K1, K2, P, strategy, 1.0, lambda_ratio,
+            K3=K3, T=T, lambda_order3=lambda_ratio_3,
+            M_residual=M_residual, lambda_residual=lambda_ratio_res,
+            include_linear_1=include_linear_1,
+            include_linear_2=include_linear_2,
+            include_linear_3=include_linear_3,
+            basis_name=basis_name,
+        ),
+        dtype=np.float64,
+    )
+    if solver not in ('auto', 'eig', 'solve'):
+        raise ValueError(f"solver must be 'auto', 'eig', or 'solve'; got {solver!r}")
+    # Eig is mathematically valid iff the shape is strictly positive AND every
+    # lambda*reg_shape stays above the evidence log-det threshold on the grid.
+    shape_min = float(reg_shape.min()) if reg_shape.size else 0.0
+    eig_valid = bool(np.all(reg_shape > 0.0)
+                     and lambdas.min() * shape_min > 1e-15)
+    # Auto additionally requires a well-conditioned shape: whitening by a penalty
+    # spanning many orders of magnitude (e.g. curvature ~ (2*pi*k)^4) yields an
+    # ill-conditioned eigenproblem, so auto keeps the exact solve there.
+    cond = float(reg_shape.max() / shape_min) if shape_min > 0 else np.inf
+    if solver == 'eig':
+        if not eig_valid:
+            raise ValueError(
+                "solver='eig' requires a strictly positive penalty shape with "
+                "all lambda*reg_shape > 1e-15 across the grid; this configuration "
+                f"has min(reg_shape)={shape_min:.3e}. Use solver='auto'/'solve', "
+                "or a strategy like 'variance'/'sobolev'."
+            )
+        use_eig = True
+    elif solver == 'solve':
+        use_eig = False
+    else:  # auto
+        use_eig = eig_valid and cond < 1e8
+    eig_solver = RidgePathEigSolver(Phi_np, y_np, reg_shape) if use_eig else None
+
     # Storage
     mse_vals = np.zeros(n_lambdas)
     gcv_vals = np.zeros(n_lambdas)
@@ -144,24 +206,22 @@ def compute_reg_path(
             sobol_3rd[(i, j, k)] = np.zeros(n_lambdas)
 
     for idx, lam1 in enumerate(lambdas):
-        lam2 = lam1 * lambda_ratio
-        lam3 = lam1 * lambda_ratio_3
-        lam_res = lam1 * lambda_ratio_res
-
-        reg = np.asarray(
-            build_regularization_vector(
-                D, K1, K2, P, strategy, lam1, lam2,
-                K3=K3, T=T, lambda_order3=lam3,
-                M_residual=M_residual, lambda_residual=lam_res,
-                include_linear_1=include_linear_1,
-                include_linear_2=include_linear_2,
-                include_linear_3=include_linear_3,
-                basis_name=basis_name,
-            ),
-            dtype=np.float64
-        )
-
-        diag = ridge_solve_with_diagnostics(Phi_np, y_np, reg)
+        if use_eig:
+            diag = eig_solver.diagnostics(lam1)
+        else:
+            reg = np.asarray(
+                build_regularization_vector(
+                    D, K1, K2, P, strategy, lam1, lam1 * lambda_ratio,
+                    K3=K3, T=T, lambda_order3=lam1 * lambda_ratio_3,
+                    M_residual=M_residual, lambda_residual=lam1 * lambda_ratio_res,
+                    include_linear_1=include_linear_1,
+                    include_linear_2=include_linear_2,
+                    include_linear_3=include_linear_3,
+                    basis_name=basis_name,
+                ),
+                dtype=np.float64
+            )
+            diag = ridge_solve_with_diagnostics(Phi_np, y_np, reg)
         mse_vals[idx] = diag['mse']
         gcv_vals[idx] = diag['gcv']
         aic_vals[idx] = diag['aic']
@@ -248,6 +308,7 @@ def compute_reg_path(
         w_norm=w_norm_vals,
         lambda_gcv_opt=lambdas[gcv_opt_idx],
         lambda_evidence_opt=lambdas[evidence_opt_idx],
+        solver_used=('eig' if use_eig else 'solve'),
     )
 
 

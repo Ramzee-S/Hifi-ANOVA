@@ -20,7 +20,7 @@ Sobol spectrum, regularization trade-offs, fit-under-noise diagnostics). A
 standalone [HTML version](docs/ishigami_showcase.html) is also included.
 
 > **Status: preliminary, work-in-progress release.** The library is usable and
-> tested (394 tests), but the API may change before a 1.0. Extracted and
+> tested (~420 tests), but the API may change before a 1.0. Extracted and
 > sanitized from a research codebase; the manuscript / theory write-up and the
 > interactive GUI are not included here and may be added later.
 >
@@ -333,9 +333,9 @@ accurate Sobol indices and a calibrated input-dependent variance. See
 
 ```bash
 python -m pytest tests/ -m smoke   # ~1 min   core math only        (88 tests)
-python -m pytest tests/            # ~3 min   + fitting & analysis   (203 tests)
-python -m pytest tests/ --full     # ~10 min  + integration pipelines (341 tests)
-python -m pytest tests/ --all      # ~12 min  everything             (394 tests)
+python -m pytest tests/            # ~3 min   + fitting & analysis   (268 tests)
+python -m pytest tests/ --full     # ~10 min  + integration pipelines (~370 tests)
+python -m pytest tests/ --all      # ~12 min  everything             (~420 tests)
 ```
 
 The test suite includes closed-form ground-truth checks: many test functions

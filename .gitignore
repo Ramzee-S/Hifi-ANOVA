@@ -63,3 +63,18 @@ CC_*
 # Exception: committed documentation figures (override figures/ and *.png above)
 !docs/figures/
 !docs/figures/*.png
+
+# Exception: this is a SOURCE package, not generated plot output — the bare
+# `plots/` rule above (for figure-output dirs) must not swallow it.
+!hifi_anova/analysis/plots/
+!hifi_anova/analysis/plots/**
+hifi_anova/analysis/plots/**/__pycache__/
+hifi_anova/analysis/plots/**/*.py[cod]
+
+# Exception: dev/ is private-but-committed (export-ignored from releases, see
+# .gitattributes). Everything inside is trackable — session notes, scratch
+# .tex/.pdf, dev-only tests/examples — except caches and logs.
+!dev/**
+dev/**/__pycache__/
+dev/**/*.py[cod]
+dev/**/*.log

@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-31
+
+### Added
+- **Joint mean+variance regularization selection (opt-in).** New module
+  `hifi_anova/training/joint_lambda.py` with `optimize_joint_lambda(...)` that
+  co-selects the mean lambda and the variance penalty `lambda_h` against a single
+  criterion — the "mean-fit vs variance-fit" tradeoff. Previously `lambda_h` was a
+  fixed config value (or only swept diagnostically); the mean is fit weighted by
+  `1/sigma^2`, so the two are coupled but were never optimized jointly. This is the
+  standard location-scale (heteroscedastic-Gaussian) smoothing-parameter problem
+  (Wood, Pya & Säfken 2016 — mgcv `gaulss`). Coordinate descent over a log-`lambda_h`
+  grid (each point a full IRLS `(w, w_h)` refit with the mean lambda re-selected by
+  whitened closed-form GCV/evidence), with **two criteria**: `'kfold_nll'` (default,
+  k=5 fold-averaged held-out Gaussian NLL, plus a robust residual-capped companion)
+  and `'laml'` (the joint Laplace-approximate marginal likelihood, split-free,
+  reusing the Newton Hessian; block-diagonal joint Hessian with an exact-cross-block
+  diagnostic). Guards (all default-on): leverage-corrected residuals `r^2/(1-lev)`,
+  a `sigma^2` floor, a data-scaled `lambda_h` lower bound with boundary warnings,
+  mean-first init, an optional MAP-II hyperprior on `log10 lambda_h`, and a
+  `df_h <= N/10` tripwire. Returns the criterion surface, both effective df's,
+  fold-wise values, and warnings. The default trainer path (fixed `lambda_h`) is
+  unchanged (golden master byte-identical). Validated on the heteroscedastic
+  Ishigami (x3 recovered as the dominant variance driver by both criteria), a
+  homoscedastic false-positive case, and the leverage-correction guard. See DEC-012.
+  Covered by `tests/test_joint_lambda.py`.
+- **JAX/autodiff variant of the lambda-selection gradients (`grad='jax'`).** The
+  model-selection criterion (GCV / AIC / BIC / -log_evidence) is a pure function
+  of lambda, so its gradient can be obtained by `jax.grad` rather than the
+  hand-derived closed form. New module `hifi_anova/training/hyperopt_jax.py`
+  implements the objective in JAX (float64, primal form, mirroring
+  `_criterion_valgrad_multi`) and exposes `criterion_valgrad_jax` (value + AD
+  gradient w.r.t. `log10(lambda)`) and `optimize_lambdas_jax`. Wired as a new
+  `grad='jax'` mode on `optimize_single_lambda`, `optimize_multi_lambda`, and
+  `optimize_multi_lambda_extended` (JAX is imported lazily, only on that path, so
+  the default numpy-only import is unchanged). The AD gradient matches the DEC-010
+  analytic gradient to floating-point round-off (~1e-16, verified for all four
+  criteria, single and multi lambda), and `grad='jax'` optima match
+  `grad='analytic'`. Unlike the analytic single-lambda path, the JAX path does
+  not require a strictly positive penalty shape (the evidence log-det masks the
+  unpenalized support). Default stays `'numeric'`; the golden master is unchanged.
+  See DEC-011. Covered by `tests/test_lambda_grad.py`.
+
+### Performance
+- **Analytic gradients for lambda selection (modular opt-in).** The GCV / evidence
+  / AIC / BIC criteria are closed-form in lambda, but the optimizers took their
+  gradients by finite differences (L-BFGS-B with no jacobian). New closed-form
+  gradients: `RidgePathEigSolver.criterion_and_grad` (single lambda, from the
+  eigendecomposition) and `_criterion_valgrad_multi` (independent per-block
+  lambdas, from one A-factorization giving value + full gradient via
+  `diag(A^-1)` and `diag(A^-1 C A^-1)`). Wired as an opt-in `grad` argument
+  (`'numeric'` default = unchanged; `'analytic'` / `'auto'`) on
+  `optimize_single_lambda`, `optimize_multi_lambda`, and
+  `optimize_multi_lambda_extended`. The analytic optimizers land on the same
+  optima as the numeric ones (gradients verified against finite differences to
+  ~1e-6 for all four criteria). A JAX/AD variant and a joint mean+variance lambda
+  objective are planned follow-ups. Covered by `tests/test_lambda_grad.py`.
+- **Vectorized `analysis.sobol.compute_sobol_indices`.** The per-block variances
+  `w_b^T G w_b` (per variable, per pair, per triple — for both the mean and the
+  variance spectra) were computed in Python loops of tiny JAX ops, each forcing a
+  host device-sync via `float(...)`. They are now batched into a single numpy
+  einsum per order (`_block_variances`), cutting the call from ~88 ms to ~31 ms
+  (~2.9x) on a D=10, 45-pair model. Numerically identical (verified against the
+  refactor golden and the full test tier).
+- **Eigendecomposition fast path for the regularization path** (`analysis.reg_path.compute_reg_path`).
+  Because the sweep scales every order's penalty proportionally with `lambda_1`,
+  the penalty is `lambda_1 * reg_shape` for a fixed shape — so the whole grid can
+  be answered from a single eigendecomposition of the whitened Gram instead of a
+  full ridge solve per grid point. New `RidgePathEigSolver`
+  (`training/hyperopt.py`) reproduces every diagnostic (`w`, RSS, df, GCV, AIC,
+  BIC, and the profile log-evidence — matching the dual-form evidence for `F > N`
+  via the `log|K| = sum(log((mu+lambda)/lambda))` identity). Measured **~22x**
+  faster on a 630x294 design at 40 lambdas, agreeing with the per-lambda solve to
+  ~1e-13. A new `solver` argument (`'auto'` default / `'eig'` / `'solve'`) selects
+  it; `'auto'` uses the fast path only when the penalty shape is strictly positive
+  and well conditioned, and falls back to the exact solve for ill-conditioned
+  shapes (e.g. `curvature`, whose weights span `(2*pi*k)^4`). The chosen path is
+  recorded in `RegPathResult.solver_used`. This touches no autodiff path (lambda
+  selection uses SciPy, not AD) and is covered by `tests/test_reg_path_eig.py`.
+
 ### Added
 - **Worked-example showcase** (`docs/ishigami_showcase.md` + `.html`) — a visual,
   explained tour of the toolbox on the heteroscedastic Ishigami fit: the dual
@@ -91,6 +170,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and working with results.
 
 ### Fixed
+- **`UnboundLocalError` in third-order fits with the default `triple_selection`.**
+  With `K3 > 0` and `triple_selection='all_active'` (the default), the trainer
+  routed through a threshold-fallback branch that referenced `_bs` — a name bound
+  only by a *later* local `import basis_size as _bs` inside `fit()`, which made
+  `_bs` a function-local and raised `UnboundLocalError` before that import ran.
+  Configs that set `triple_selection='all'` or a principled method sidestepped the
+  branch, hiding it. Now uses the module-level `basis_size`. Regression test:
+  `tests/test_trainer_bugfixes.py`.
+- **Unbound log-variance intercept `h0` in the heteroscedastic solver.** In
+  `_fit_heteroscedastic`, the outer loop's `h0_init if outer == 0 else h0` and the
+  post-loop model build referenced `h0` before it was guaranteed bound (a
+  read-before-assignment that only manifests in degenerate configs but that static
+  analysis flags). `h0` is now initialized to `h0_init` before the loop; a no-op
+  for valid configs (`max_outer_iter >= 1`).
+- **Unknown `residual` type silently disabled Stage C.** A typo'd or unrecognized
+  residual type (e.g. `residual='rbg'`, or a config dict `{'type': 'gaussian'}`)
+  added stage `'C'` to the pipeline, but no Stage C branch matched it, so the
+  stage silently did nothing — the caller got a residual-free model believing one
+  had been fitted. `training/trainer.py` now validates the residual type at the
+  top of Stage C and raises `ValueError` (listing the known types
+  `nn`/`rbf`/`rff`/`nystrom`) instead of no-op'ing; a bare-string residual config
+  is coerced to `{'type': ...}` first. The variance-residual path already raised
+  via `create_residual`. Covered by `tests/test_residual_validation.py`.
 - **Sobol confidence intervals undercovered (~90% actual at 95% nominal) — for
   every basis.** The delta-method gradient in
   `analysis/automl.py::sobol_confidence_intervals` only used the component's own
