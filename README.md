@@ -389,34 +389,18 @@ contributions here are the multi-basis (Fourier/Legendre/Haar) hierarchy with
 per-variable effect characterization, the dual mean+variance Sobol spectrum, and
 the fully analytic one-solve diagnostic pipeline.
 
-## Roadmap
-
-- ~~Add the Ishigami benchmark~~ Done: `hifi_anova.data.generate_ishigami` /
-  `ishigami_sobol_indices` (with a heteroscedastic variant) plus the
-  `examples/run_ishigami_heteroscedastic.py` showcase and the new
-  dual-sensitivity ellipse plot. More standard SA test functions to follow.
-- ~~Validate confidence intervals for Legendre / Haar bases.~~ Done: Monte-Carlo
-  coverage is nominal (~0.95) for all three bases after the full-gradient
-  delta-method fix; a coverage regression test guards it.
-- Refactor the large `training/trainer.py` and `analysis/plots.py` modules.
-- Package the interactive GUI and the theory/manuscript write-up.
-- **Structured Hoeffding-ANOVA networks** — the current neural residual is a
-  plain black-box MLP whose ANOVA/Sobol integrity is enforced by orthogonal
-  projection and re-decomposition. An *architecturally* Hoeffding-structured
-  network (per-variable / per-interaction subnetworks) is planned as separate
-  follow-up work.
 
 ## License
 
 **Source-available, not open-source.** The **source code** is licensed under the
 [PolyForm Internal Use License 1.0.0](https://polyformproject.org/licenses/internal-use/1.0.0)
-— see [LICENSE](LICENSE). You may use the software, and make changes and new
+— see [LICENSE](LICENSE). You may download and use the software; you may make changes and new
 works based on it, **only for the internal business operations of you and your
-company**. **Distribution to third parties is not permitted.** All other rights
-are reserved.
+company**. However, **Distribution to third parties is not permitted.** All other rights
+are reserved. More permissive license terms are planned when the project matures. 
 
 Copyright 2026 R. Sala (libre-labs.org). For any use beyond the license terms
-(e.g. distribution or providing it to third parties), contact the licensor.
+(e.g. distribution or providing it to third parties), Contact the licensor.
 
 See [LICENSING.md](LICENSING.md) for the full overview covering source code,
 documentation, and third-party material.
