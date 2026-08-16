@@ -16,6 +16,7 @@ from hifi_anova.analysis.automl import (
     noise_complexity_curve,
     kfold_cv_analytic,
     sample_size_diagnostics,
+    stability_diagnostics,
 )
 
 pytestmark = pytest.mark.smoke
@@ -198,6 +199,41 @@ class TestKfoldCVAnalytic:
         assert 0.7 < ratio3 < 1.5, f"3-fold/LOO ratio = {ratio3:.3f}"
         assert 0.8 < ratio10 < 1.3, f"10-fold/LOO ratio = {ratio10:.3f}"
 
+    def test_woodbury_equals_bruteforce_refit(self, regression_data):
+        """Decisive: the Woodbury downdate must reproduce an explicit per-fold
+        refit exactly (guards the [I - H_k] downdate sign).
+
+        Regression for the previously-wrong [I + H_k] inner matrix / '-'
+        correction, which made k-fold CV an incorrect (over-optimistic) number.
+        """
+        Phi = np.asarray(regression_data['Phi'], dtype=np.float64)
+        y = np.asarray(regression_data['y'], dtype=np.float64)
+        reg = np.asarray(regression_data['reg'], dtype=np.float64)
+        N = Phi.shape[0]
+        n_folds, seed = 5, 42
+
+        kf = kfold_cv_analytic(Phi, y, reg, n_folds=n_folds, seed=seed)
+
+        # Reproduce kfold_cv_analytic's exact fold assignment.
+        rng = np.random.RandomState(seed)
+        fold_ids = np.zeros(N, dtype=int)
+        perm = rng.permutation(N)
+        fold_size = N // n_folds
+        for k in range(n_folds):
+            start = k * fold_size
+            end = (k + 1) * fold_size if k < n_folds - 1 else N
+            fold_ids[perm[start:end]] = k
+
+        bf_mses = []
+        for k in range(n_folds):
+            val = fold_ids == k
+            tr = ~val
+            A_tr = Phi[tr].T @ Phi[tr] + np.diag(reg)
+            w_tr = np.linalg.solve(A_tr, Phi[tr].T @ y[tr])
+            bf_mses.append(float(np.mean((y[val] - Phi[val] @ w_tr) ** 2)))
+
+        np.testing.assert_allclose(kf['fold_mses'], bf_mses, rtol=1e-8, atol=1e-8)
+
 
 class TestSampleSizeDiagnostics:
     def test_returns_recommendation(self, regression_data):
@@ -280,3 +316,123 @@ class TestSobolCICoverageAcrossBases:
             f"delta-method SE underestimates sampling SD")
         assert 0.90 <= se_sd_ratio <= 1.20, (
             f"{basis_name}: mean SE/SD = {se_sd_ratio:.3f} outside [0.90, 1.20]")
+
+
+class TestStabilityDiagnosticsExactFoldDf:
+    """The per-fold sigma_hat uses the EXACT leave-fold-out effective df
+    (df_k = tr(H_k)), not the old df_full * n_train/N linear approximation."""
+
+    @staticmethod
+    def _fold_ids(N, n_folds, seed):
+        # Replicates the fold assignment inside stability_diagnostics.
+        rng = np.random.RandomState(seed)
+        fold_ids = np.zeros(N, dtype=int)
+        perm = rng.permutation(N)
+        fold_size = N // n_folds
+        for k in range(n_folds):
+            start = k * fold_size
+            end = (k + 1) * fold_size if k < n_folds - 1 else N
+            fold_ids[perm[start:end]] = k
+        return fold_ids
+
+    def test_per_fold_sigma_matches_brute_force(self, regression_data):
+        Phi, y, reg = regression_data['Phi'], regression_data['y'], regression_data['reg']
+        D, K1, G1 = regression_data['D'], regression_data['K1'], regression_data['G1']
+        N, n_folds, seed = regression_data['N'], 5, 0
+
+        out = stability_diagnostics(Phi, y, reg, D, K1, G1,
+                                    n_folds=n_folds, seed=seed)
+
+        R = np.diag(reg)
+        fold_ids = self._fold_ids(N, n_folds, seed)
+        for k in range(n_folds):
+            train = fold_ids != k
+            Phi_tr, y_tr = Phi[train], y[train]
+            n_train = int(train.sum())
+            A_k = Phi_tr.T @ Phi_tr + R
+            A_k_inv = np.linalg.inv(A_k)
+            w_k = A_k_inv @ (Phi_tr.T @ y_tr)               # brute-force refit
+            r_train = y_tr - Phi_tr @ w_k
+            df_k = float(np.trace(A_k_inv @ (Phi_tr.T @ Phi_tr)))  # exact tr(H_k)
+            sigma_bf = float(np.sqrt(np.sum(r_train ** 2)
+                                     / max(1, n_train - df_k)))
+            assert np.isclose(out['per_fold'][k]['sigma_hat'], sigma_bf,
+                              rtol=1e-6), (
+                f"fold {k}: sigma_hat {out['per_fold'][k]['sigma_hat']:.6f} "
+                f"!= brute-force {sigma_bf:.6f}")
+
+
+class TestResidualDfAndRobustCI:
+    """Advisor items #4/#6: residual-df σ̂, HC3 sandwich, t critical value."""
+
+    def test_df_residual_is_exact_residual_effective_df(self, regression_data):
+        """df_residual == N - 2 tr(H) + tr(H^2), computed independently."""
+        Phi, y, reg = (regression_data['Phi'], regression_data['y'],
+                       regression_data['reg'])
+        a = ridge_analytics(Phi, y, reg)
+        N, F = Phi.shape
+        A = Phi.T @ Phi + np.diag(reg)
+        H = Phi @ np.linalg.solve(A, Phi.T)          # N x N hat matrix (brute force)
+        expected = N - 2.0 * np.trace(H) + np.trace(H @ H.T)
+        assert np.isclose(a['df_residual'], expected, rtol=1e-8)
+        assert np.isclose(a['tr_H2'], np.trace(H @ H), rtol=1e-8)
+        # σ̂² must use the residual-df denominator, not N - tr(H).
+        assert np.isclose(a['sigma2_hat'], a['rss'] / max(expected, 1.0), rtol=1e-10)
+
+    def test_residual_df_smaller_than_N_minus_trH(self, regression_data):
+        """N - 2tr(H) + tr(HH^T) <= N - tr(H) since sum h_i(1-h_i) >= 0,
+        so the residual-df σ̂ is >= the N-tr(H) shorthand."""
+        a = ridge_analytics(regression_data['Phi'], regression_data['y'],
+                            regression_data['reg'])
+        N = regression_data['N']
+        assert a['df_residual'] <= N - a['df'] + 1e-9
+
+    def test_hc3_wider_than_hc0(self, regression_data):
+        """HC3 leverage weights 1/(1-h_ii)^2 >= 1, so HC3 SEs >= HC0 SEs."""
+        a = ridge_analytics(regression_data['Phi'], regression_data['y'],
+                            regression_data['reg'])
+        Phi = regression_data['Phi']
+        cov0 = sandwich_covariance(Phi, a['A_inv'], a['residuals'], hc='HC0')
+        cov3 = sandwich_covariance(Phi, a['A_inv'], a['residuals'], hc='HC3',
+                                   leverages=a['leverages'])
+        assert np.all(np.diag(cov3) >= np.diag(cov0) - 1e-12)
+        # strictly wider somewhere (leverages are not all zero)
+        assert np.any(np.diag(cov3) > np.diag(cov0) + 1e-10)
+
+    def test_hc3_equals_hc0_at_zero_leverage(self, regression_data):
+        """With all leverages forced to 0, HC3 collapses to HC0."""
+        a = ridge_analytics(regression_data['Phi'], regression_data['y'],
+                            regression_data['reg'])
+        Phi = regression_data['Phi']
+        cov0 = sandwich_covariance(Phi, a['A_inv'], a['residuals'], hc='HC0')
+        cov3 = sandwich_covariance(Phi, a['A_inv'], a['residuals'], hc='HC3',
+                                   leverages=np.zeros(Phi.shape[0]))
+        assert np.allclose(cov0, cov3)
+
+    def test_ci_uses_t_and_reports_provenance(self, regression_data):
+        ci = sobol_confidence_intervals(
+            regression_data['Phi'], regression_data['y'], regression_data['reg'],
+            regression_data['D'], regression_data['K1'], regression_data['G1'])
+        assert ci['sandwich'] == 'HC3'
+        assert ci['crit_dist'] == 't'
+        assert ci['t_df'] > 1
+        assert ci['conditional_on_residual_variance'] is True
+        assert 'df_residual' in ci
+
+    def test_t_wider_than_z_small_df(self):
+        """The t critical value must exceed the normal z at finite df, so the
+        interval is wider than the old normal-based one (same SE)."""
+        from scipy.stats import t as sp_t, norm as sp_norm
+        # A high-complexity / low residual-df fit: many basis fns, few samples.
+        rng = np.random.RandomState(0)
+        N, D, K1 = 60, 3, 5
+        X = rng.uniform(0, 1, (N, D))
+        Phi = np.asarray(build_first_order_features(jnp.array(X), K1),
+                         dtype=np.float64)
+        y = (X[:, 0] - 0.5) + 0.3 * rng.randn(N)
+        y = y - y.mean()
+        reg = np.asarray(build_regularization_vector(D, K1, 0, 0, 'curvature',
+                                                     0.001, 0), dtype=np.float64)
+        a = ridge_analytics(Phi, y, reg)
+        t_crit = sp_t.ppf(0.975, df=max(a['df_residual'], 1.0))
+        assert t_crit > sp_norm.ppf(0.975)

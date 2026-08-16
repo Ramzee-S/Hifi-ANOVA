@@ -2,7 +2,7 @@
 
 Demonstrates the two-mode approach:
 - Mode 1 (Prediction): GCV-optimal lambda, good MSE, shrunk Sobol
-- Mode 2 (Sobol estimation): additivity-optimal lambda, unbiased Sobol
+- Mode 2 (Sobol estimation): experimental additivity-calibrated lambda
 """
 import jax; jax.config.update('jax_enable_x64', True)
 import warnings; warnings.filterwarnings('ignore')

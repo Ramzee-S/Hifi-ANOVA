@@ -1,7 +1,6 @@
 """ResidualMLP: wrapper around equinox MLP for residual modeling."""
 
 import jax
-import jax.numpy as jnp
 import equinox as eqx
 from typing import List
 

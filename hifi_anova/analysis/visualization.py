@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from typing import Optional, Dict
 
 from ..core.features import basis_size
+from .._result_aliases import canonical_result_mapping as _canonical_result_mapping
 
 # Qualitative per-variable palette (colour-blind safe), mirrors plots.VAR_COLORS.
 VAR_COLORS = [
@@ -28,7 +29,7 @@ def plot_sobol_bars(sobol_results: dict, variable_names: Optional[list] = None,
     indices = [first_order[i] for i in range(D)]
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    bars = ax.bar(variable_names, indices, color='steelblue', alpha=0.8)
+    ax.bar(variable_names, indices, color='steelblue', alpha=0.8)
     ax.set_ylabel("First-Order Sobol Index")
     ax.set_title(title)
     ax.set_ylim(0, max(indices) * 1.2 if max(indices) > 0 else 1.0)
@@ -50,12 +51,14 @@ def plot_sobol_bars(sobol_results: dict, variable_names: Optional[list] = None,
 
 def plot_dual_sobol(sobol_results: dict, variable_names: Optional[list] = None,
                     save_path: Optional[str] = None):
-    """Dual Sobol spectrum: mean and variance indices side by side."""
-    if 'variance_sobol' not in sobol_results:
+    """Dual spectrum: mean sensitivity and log-variance index side by side."""
+    sobol_results = _canonical_result_mapping(
+        sobol_results, warn_legacy=True)
+    if 'log_variance_sobol' not in sobol_results:
         return plot_sobol_bars(sobol_results, variable_names, save_path=save_path)
 
     mean_first = sobol_results['mean_sobol']['first_order']
-    var_first = sobol_results['variance_sobol']['first_order']
+    var_first = sobol_results['log_variance_sobol']['first_order']
     D = len(mean_first)
 
     if variable_names is None:
@@ -68,12 +71,12 @@ def plot_dual_sobol(sobol_results: dict, variable_names: Optional[list] = None,
     ax.bar(x_pos - width/2, [mean_first[i] for i in range(D)],
            width, label='Mean Sobol', color='steelblue', alpha=0.8)
     ax.bar(x_pos + width/2, [var_first[i] for i in range(D)],
-           width, label='Variance Sobol', color='coral', alpha=0.8)
+           width, label=r'Log-variance index $S^h$', color='coral', alpha=0.8)
 
     ax.set_xticks(x_pos)
     ax.set_xticklabels(variable_names)
     ax.set_ylabel("Sobol Index")
-    ax.set_title("Dual Sobol Spectrum (Mean & Variance)")
+    ax.set_title("Dual spectrum (mean and log-variance index)")
     ax.legend()
 
     plt.tight_layout()
@@ -87,10 +90,8 @@ def plot_component_functions(model, variable_indices: list,
                             save_path: Optional[str] = None):
     """Plot individual first-order component functions."""
     from ..core.features import build_per_variable_basis
-    from ..core.gram import build_gram_matrix
 
     K1 = model.K1
-    D = model.D
     n_vars = len(variable_indices)
     _bn = getattr(model, 'basis_name', 'fourier')
     _il1 = getattr(model, 'include_linear_1', True)
@@ -146,18 +147,22 @@ def plot_interaction_heatmap(model, pair_index: int,
         i = int(model.pair_indices[pair_index, 0])
         j = int(model.pair_indices[pair_index, 1])
 
-    # Get coefficients
+    # Get coefficients. For a term-structure model K2 holds max(pair_k2), so
+    # this pair's block/basis must use its own order — else reshape and the
+    # basis width mismatch the (smaller) coefficient vector on the ragged layout.
     _bn = getattr(model, 'basis_name', 'fourier')
     _il2 = getattr(model, 'include_linear_2', True)
+    _pair_k2 = getattr(model, 'pair_k2', None)
+    K2_p = int(_pair_k2[pair_index]) if _pair_k2 is not None else K2
     wp = model.mean_model.get_coefficients_for_pair(pair_index)
-    block = basis_size(K2, _il2, _bn)
+    block = basis_size(K2_p, _il2, _bn)
     W = wp.reshape(block, block)
 
     # Evaluate on 2D grid
     n_grid = 50
     x_grid = jnp.linspace(0, 1, n_grid)
     x_1d = x_grid[:, None]
-    basis = build_per_variable_basis(x_1d, K2, include_linear=_il2, basis_name=_bn)[:, 0, :]
+    basis = build_per_variable_basis(x_1d, K2_p, include_linear=_il2, basis_name=_bn)[:, 0, :]
 
     # f_ij(xi, xj) = basis_i^T W basis_j
     Z = np.array(basis @ W @ basis.T)
@@ -186,29 +191,32 @@ def plot_sensitivity_ellipses(sobol_results: dict,
                               ci_scale: float = 1.0,
                               title: Optional[str] = None,
                               save_path: Optional[str] = None):
-    """Visualize the dual (mean vs variance) Sobol spectrum as ellipses.
+    """Visualize the dual mean/log-variance Sobol spectrum as ellipses.
 
     Two complementary views of the same idea — that every variable carries a
-    *pair* of sensitivities, one for the mean E[y|x] and one for the variance
-    Var[y|x]:
+    *pair* of sensitivities, one for the mean E[y|x] and one for the fitted
+    log-residual scale h(x):
 
     ``mode='glyph'`` (default) — one ellipse per variable, its **width**
         proportional to the mean sensitivity ``S_i^f`` and its **height**
-        proportional to the variance sensitivity ``S_i^h``. The *shape* is the
+        proportional to the log-variance index ``S_i^h``. The *shape* is the
         message: a wide, flat ellipse is a mean driver; a tall, narrow ellipse
-        is a variance driver; a circle is a balanced dual-role variable. This
+        is a multiplicative residual-scale driver; a circle is a balanced
+        dual-role variable. This
         reads the whole spectrum at a glance without axes to trace.
 
     ``mode='plane'`` — a quantitative scatter placing each variable at
         ``(S_i^f, S_i^h)``. Bottom-right = mean drivers, top-left = hidden
-        variance drivers, top-right = dual-role. When ``mean_ci``/``var_ci``
+        log-residual-scale drivers, top-right = dual-role. When
+        ``mean_ci``/``var_ci``
         (dicts ``{i: (lo, hi)}``) are supplied, each point becomes an ellipse
         whose semi-axes are the CI half-widths (optionally magnified by
         ``ci_scale`` for visibility) — a joint uncertainty region.
 
     Args:
         sobol_results: output of ``compute_sobol_indices`` (needs
-            ``variance_sobol`` for the variance axis; falls back to 0 otherwise).
+            ``log_variance_sobol`` for the log-variance axis; falls back to 0
+            otherwise).
         variable_names: labels; default x1, x2, ...
         mode: 'glyph' or 'plane'.
         mean_ci, var_ci: optional ``{i: (lo, hi)}`` CIs (used in 'plane' mode).
@@ -223,13 +231,15 @@ def plot_sensitivity_ellipses(sobol_results: dict,
     """
     from matplotlib.patches import Ellipse
 
+    sobol_results = _canonical_result_mapping(
+        sobol_results, warn_legacy=True)
     mean_first = sobol_results['mean_sobol'][use]
     D = len(mean_first)
     if variable_names is None:
         variable_names = [f"$x_{{{i+1}}}$" for i in range(D)]
 
-    has_var = 'variance_sobol' in sobol_results
-    var_first = (sobol_results['variance_sobol'][use] if has_var
+    has_var = 'log_variance_sobol' in sobol_results
+    var_first = (sobol_results['log_variance_sobol'][use] if has_var
                  else {i: 0.0 for i in range(D)})
 
     idx = sorted(range(D), key=lambda i: float(mean_first.get(i, 0))
@@ -243,7 +253,7 @@ def plot_sensitivity_ellipses(sobol_results: dict,
         return _ellipse_plane(idx, mean_first, var_first, variable_names,
                               mean_ci, var_ci, ci_scale, lvl, title, save_path)
 
-    # ---- glyph mode: width = mean sensitivity, height = variance sensitivity ---
+    # ---- glyph mode: width = mean sensitivity, height = log-variance index ---
     vals = [max(float(mean_first.get(i, 0)), float(var_first.get(i, 0)))
             for i in idx]
     max_val = max(vals) if vals else 1.0
@@ -277,10 +287,10 @@ def plot_sensitivity_ellipses(sobol_results: dict,
     ax.set_xticks([])
     for sp in ('left', 'right', 'top', 'bottom'):
         ax.spines[sp].set_visible(False)
-    ax.set_title(title or 'Dual-sensitivity glyphs (mean vs variance)')
+    ax.set_title(title or 'Dual-sensitivity glyphs (mean vs log variance)')
     ax.text(0.5, -0.02,
             r'width $\propto$ mean sensitivity $S^f$'
-            r'    ·    height $\propto$ variance sensitivity $S^h$',
+            r'    ·    height $\propto$ log-variance index $S^h$',
             transform=ax.transAxes, ha='center', va='top', fontsize=9,
             color='#666666')
 
@@ -322,7 +332,7 @@ def _ellipse_plane(idx, mean_first, var_first, variable_names,
     ax.plot([0, hi], [0, hi], '--', color='#AAAAAA', lw=1, zorder=1, label=lbl)
     ax.text(0.97 * hi, 0.05 * hi, 'mean\ndrivers', ha='right', va='bottom',
             fontsize=8, color='#999999', style='italic')
-    ax.text(0.03 * hi, 0.97 * hi, 'hidden variance\ndrivers', ha='left',
+    ax.text(0.03 * hi, 0.97 * hi, 'hidden log-variance\ndrivers', ha='left',
             va='top', fontsize=8, color='#999999', style='italic')
     ax.text(0.97 * hi, 0.97 * hi, 'dual-role', ha='right', va='top',
             fontsize=8, color='#999999', style='italic')
@@ -331,8 +341,8 @@ def _ellipse_plane(idx, mean_first, var_first, variable_names,
     ax.set_ylim(-0.02 * hi, hi)
     ax.set_aspect('equal')
     ax.set_xlabel(f'Mean {lvl} Sobol  $S_i^f$')
-    ax.set_ylabel(f'Variance {lvl} Sobol  $S_i^h$')
-    ax.set_title(title or 'Dual-sensitivity plane (mean vs variance)')
+    ax.set_ylabel(f'Log-variance {lvl} index  $S_i^h$')
+    ax.set_title(title or 'Dual-sensitivity plane (mean vs log variance)')
     ax.legend(loc='lower right', fontsize=8)
     ax.grid(True, alpha=0.25)
 

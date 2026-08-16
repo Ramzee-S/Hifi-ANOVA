@@ -18,17 +18,40 @@ an updated model. The existing training pipeline doesn't change.
 import jax
 import jax.numpy as jnp
 import equinox as eqx
-import numpy as np
 import optax
-from typing import Optional, Dict
+from typing import Optional
 
-from ..core.gram import build_gram_matrix, build_gram_matrix_2d
-from ..core.pairs import PairManager
 from ..core.features import basis_size
 from ..model.mean_model import MeanModel
 from ..model.hifi_anova import HiFiANOVA
+from ..model.linear_residual import ProjectedResidual
 from .ridge import weighted_ridge_solve
-from .regularization import build_regularization_vector
+
+
+def _reject_term_structure(model, fn):
+    """Guard the NN re-decomposition paths against user-defined term structure.
+
+    Both re-decomposition routines slice the mean coefficient vector with the
+    UNIFORM per-order block widths (``F1 = D·b1``, ``F2 = P·b2``). A model with
+    a per-pair ``K2`` mapping / ``variable_orders`` (BR-04/BR-06) carries a
+    RAGGED ``w2`` (per-pair block sizes) — and a mixed per-variable basis
+    (``var_specs``) likewise — so the uniform slice would silently mis-align
+    the folded projection and corrupt the coefficients. These are not reachable
+    from a term-structure fit's default (mean-only) path; reject them explicitly
+    rather than return a corrupted model. ``fo_included`` alone keeps the
+    uniform ``w1`` but the rebuilt model would drop its fitted-design layout
+    metadata, so it is rejected here too.
+    """
+    if (getattr(model, 'pair_block_info', None) is not None
+            or getattr(model, 'pair_k2', None) is not None
+            or getattr(model, 'var_specs', None) is not None
+            or getattr(model, 'fo_included', None) is not None):
+        raise NotImplementedError(
+            f"{fn} does not support user-defined term structure (per-pair K2 "
+            "mapping, variable_orders, or a mixed per-variable basis): the "
+            "Fourier/NN re-decomposition assumes the uniform per-order block "
+            "layout and would mis-slice the ragged coefficient vector. Re-fit "
+            "without the term-structure keys to use the residual-NN stages.")
 
 
 # =============================================================================
@@ -39,43 +62,63 @@ def redecompose(model: HiFiANOVA,
                 reg_diag: Optional[jnp.ndarray] = None,
                 n_eval: int = 50000,
                 seed: int = 0) -> HiFiANOVA:
-    """Re-decompose a jointly-trained model into clean Fourier + NN parts.
+    """Re-decompose a jointly-trained model into a clean Fourier + NN split.
 
-    Generates uniform evaluation points, evaluates the total learned function
-    f_total = f_Fourier_old + f_NN, then computes the Hoeffding (ANOVA)
-    decomposition of f_total by projecting onto the Fourier basis.
+    Computes the Hoeffding (functional-ANOVA) decomposition of the **full learned
+    function** ``f_total = f_Fourier_old + f_NN`` by projecting ``f_total`` onto
+    the low-order Fourier basis under the uniform input measure on ``[0, 1]^D``.
 
-    The new Fourier coefficients represent the correct low-order decomposition
-    of whatever the full model learned. The new Fourier intercept f0 is set
-    so that the total prediction is preserved exactly:
+    Writing ``P`` for that L2 projection, the projection of the total is::
 
-        f_Fourier_new(x) + f_NN(x) = f_total(x)
+        f_Fourier_new = P(f_total) = f_Fourier_old + P(f_NN)
 
-    This is achieved by re-projecting f_total (to get clean Sobol indices)
-    and then setting:
-        f0_new = f0_total_proj - mean(f_NN)
+    (the old Fourier part is already in the basis, so only the NN's
+    low-order-representable structure ``P(f_NN)`` is new). The residual becomes the
+    orthogonal remainder::
 
-    where f0_total_proj accounts for the Fourier projection of the full signal.
-    Since the NN weights are frozen, the Fourier model takes responsibility
-    for the correct low-order decomposition while the NN continues to provide
-    its original output. The total f_Fourier_new + f_NN = f_total because
-    the Fourier re-projection targets f_total - f_NN (what the Fourier model
-    must explain given that the NN is fixed).
+        residual_new = f_total - f_Fourier_new = f_NN - P(f_NN) = (I - P) f_NN
+
+    So the operator **moves the NN's low-order structure into the interpretable
+    Fourier coefficients** and leaves a residual with (approximately) zero
+    low-order content — a genuine Hoeffding residual. The Sobol indices of the new
+    Fourier coefficients then describe the low-order structure of the *whole*
+    learned function, not just the (possibly drifted) Fourier part.
+
+    **Prediction is preserved exactly.** The projection ``P(f_NN)`` is folded into
+    the mean model and the *same* term is subtracted inside a
+    :class:`~hifi_anova.model.linear_residual.ProjectedResidual` wrapping the
+    original residual, so ``mean_new(x) + residual_new(x) = f_total(x)`` for every
+    ``x`` — independent of ``n_eval`` or the projection's accuracy (which only
+    affects how the attribution is split, not the total).
+
+    This is the corrected operator (advisor guidance, DEC-020/DEC-022). The prior
+    implementation projected ``f_total - f_NN`` — which equals the *already-drifted*
+    Fourier part — and so was a no-op for attribution. If the model has **no**
+    residual net, the decomposition is already clean and the model is returned
+    unchanged.
 
     Args:
-        model: HiFiANOVA after joint fine-tuning (or any training)
-        reg_diag: (F,) regularization for the re-projection.
-                  None = OLS (for Sobol estimation mode).
-                  Provide the original reg_diag for prediction mode.
-        n_eval: number of uniform evaluation points (more = more accurate)
-        seed: PRNG seed for evaluation points
+        model: HiFiANOVA after joint fine-tuning (or any training).
+        reg_diag: (F,) regularization for the projection of ``f_NN``. ``None`` =
+            OLS, i.e. the exact L2 (Hoeffding) projection — the default and the
+            statistically meaningful choice. A non-zero ``reg_diag`` shrinks how
+            much NN structure is folded into the Fourier part (prediction is still
+            preserved exactly).
+        n_eval: number of uniform evaluation points for the projection (more =
+            more accurate attribution split).
+        seed: PRNG seed for the evaluation points.
 
     Returns:
-        New HiFiANOVA with re-decomposed Fourier coefficients.
-        Total prediction is preserved (f_Fourier_new + f_NN = f_total).
-        Sobol indices from the new Fourier coefficients reflect the
-        Hoeffding decomposition of f_total.
+        New HiFiANOVA. ``mean_model`` carries ``w_old + P(f_NN)`` coefficients and
+        ``residual_net`` is a ``ProjectedResidual`` emitting ``(I - P) f_NN``.
+        Total prediction is byte-preserved; Sobol indices reflect the Hoeffding
+        decomposition of ``f_total``.
     """
+    # No residual → f_total is already the Fourier part; nothing to fold in.
+    if model.residual_net is None:
+        return model
+    _reject_term_structure(model, 'redecompose')
+
     D = model.D
     K1 = model.K1
     K2 = model.K2
@@ -85,86 +128,74 @@ def redecompose(model: HiFiANOVA,
     include_linear_3 = getattr(model, 'include_linear_3', True)
     basis_name_val = getattr(model, 'basis_name', 'fourier')
 
-    # Generate uniform evaluation points
+    # Uniform evaluation points + Fourier design under the uniform measure.
     key = jax.random.PRNGKey(seed)
     x_eval = jax.random.uniform(key, (n_eval, D))
-
-    # Build Fourier features on evaluation points
-    phi1_eval = model.build_phi1(x_eval)
-    phi2_eval = model.build_phi2(x_eval)
-    phi3_eval = model.build_phi3(x_eval) if K3 > 0 else None
-
     Phi_eval = model.build_phi_all(x_eval)
 
-    # Evaluate total function (Fourier + NN) on evaluation points
-    f_fourier_old = model.mean_model.predict(phi1_eval, phi2_eval, phi3_eval)
-    has_nn = model.residual_net is not None
-    if has_nn:
-        f_nn_eval = jax.vmap(model.residual_net)(x_eval)
-        if f_nn_eval.ndim > 1:
-            f_nn_eval = f_nn_eval.squeeze(-1)
-        f_total = f_fourier_old + f_nn_eval
-    else:
-        f_nn_eval = jnp.zeros(len(x_eval))
-        f_total = f_fourier_old
+    # Evaluate the NN residual on the eval points.
+    f_nn_eval = jax.vmap(model.residual_net)(x_eval)
+    if f_nn_eval.ndim > 1:
+        f_nn_eval = f_nn_eval.squeeze(-1)
 
-    # === Project (f_total - f_NN) onto the Fourier basis ===
-    #
-    # Since the NN weights are frozen, the Fourier model must explain:
-    #   f_Fourier_new(x) = f_total(x) - f_NN(x)
-    #
-    # This preserves the total prediction exactly:
-    #   f_Fourier_new(x) + f_NN(x) = (f_total - f_NN)(x) + f_NN(x) = f_total(x)
-    #   (up to Fourier projection error, which is zero for the Fourier-representable part)
-    #
-    # The Sobol indices from w_new reflect the Hoeffding decomposition of
-    # (f_total - f_NN), which is the Fourier-representable part of f_total.
-    # This is exactly what we want: the Fourier Sobol indices describe
-    # the low-order structure, and the NN variance fraction describes
-    # the higher-order residual.
-
-    f_target = f_total - f_nn_eval  # what the Fourier model must explain
-    f0_new = float(jnp.mean(f_target))
-    f_centered = f_target - f0_new
-
+    # === Project f_NN onto the low-order Fourier basis (P(f_NN)) ===
+    # constant part + coefficients of the centered projection.
+    f0_proj = jnp.mean(f_nn_eval)
+    f_nn_centered = f_nn_eval - f0_proj
     if reg_diag is not None:
-        w_new = weighted_ridge_solve(Phi_eval, f_centered, reg_diag)
+        w_proj = weighted_ridge_solve(Phi_eval, f_nn_centered, reg_diag)
     else:
         F = Phi_eval.shape[1]
         tiny_reg = jnp.full(F, 1e-10)
-        w_new = weighted_ridge_solve(Phi_eval, f_centered, tiny_reg)
+        w_proj = weighted_ridge_solve(Phi_eval, f_nn_centered, tiny_reg)
 
-    # Split into first-order, second-order, and third-order
+    # === Fold P(f_NN) into the Fourier coefficients: w_new = w_old + w_proj ===
     F1 = D * basis_size(K1, include_linear_1, basis_name_val)
-    w1_new = w_new[:F1]
     if K2 > 0:
         B2 = basis_size(K2, include_linear_2, basis_name_val)
         n_pairs = model.pair_indices.shape[0] if model.pair_indices is not None else 0
         F2 = n_pairs * B2 * B2
-        w2_new = w_new[F1:F1 + F2]
     else:
         F2 = 0
-        w2_new = jnp.array([], dtype=jnp.float32)
-    if K3 > 0:
-        w3_new = w_new[F1 + F2:]
-    else:
-        w3_new = jnp.array([], dtype=jnp.float32)
 
-    # Build new mean model
+    mm = model.mean_model
+    w1_old = jnp.asarray(mm.w1, dtype=jnp.float32)
+    w2_old = jnp.asarray(mm.w2, dtype=jnp.float32)
+    w3_old = jnp.asarray(mm.w3, dtype=jnp.float32)
+    w_proj = jnp.asarray(w_proj, dtype=jnp.float32)
+
+    w1_new = w1_old + w_proj[:F1]
+    w2_new = (w2_old + w_proj[F1:F1 + F2]) if K2 > 0 else w2_old
+    w3_new = (w3_old + w_proj[F1 + F2:]) if K3 > 0 else w3_old
+    f0_new = jnp.asarray(mm.f0, dtype=jnp.float32) + jnp.asarray(f0_proj,
+                                                                dtype=jnp.float32)
+
     new_mean_model = MeanModel(
-        f0=jnp.array(f0_new, dtype=jnp.float32),
-        w1=jnp.array(w1_new, dtype=jnp.float32),
-        w2=jnp.array(w2_new, dtype=jnp.float32),
-        K1=K1, K2=K2, D=D,
-        w3=jnp.array(w3_new, dtype=jnp.float32),
-        K3=K3,
+        f0=f0_new, w1=w1_new, w2=w2_new,
+        K1=K1, K2=K2, D=D, w3=w3_new, K3=K3,
         include_linear_1=include_linear_1,
         include_linear_2=include_linear_2,
         include_linear_3=include_linear_3,
         basis_name=basis_name_val,
     )
 
-    new_model = eqx.tree_at(lambda m: m.mean_model, model, new_mean_model)
+    # === Residual becomes (I - P) f_NN: wrap to subtract the same projection ===
+    new_residual = ProjectedResidual(
+        inner=model.residual_net,
+        proj_coeffs=w_proj,
+        f0_proj=jnp.asarray(f0_proj, dtype=jnp.float32),
+        pair_indices=model.pair_indices,
+        triple_indices=model.triple_indices,
+        K1=K1, K2=K2, K3=K3, D=D,
+        include_linear_1=include_linear_1,
+        include_linear_2=include_linear_2,
+        include_linear_3=include_linear_3,
+        basis_name=basis_name_val,
+    )
+
+    new_model = eqx.tree_at(
+        lambda m: (m.mean_model, m.residual_net), model,
+        (new_mean_model, new_residual))
     return new_model
 
 
@@ -213,6 +244,7 @@ def alternating_ridge_nn(
     """
     if key is None:
         key = jax.random.PRNGKey(42)
+    _reject_term_structure(model, 'alternating_ridge_nn')
 
     D = model.D
     K1 = model.K1
@@ -232,7 +264,6 @@ def alternating_ridge_nn(
     phi3_val = model.build_phi3(x_val) if K3 > 0 else None
 
     Phi_train = model.build_phi_all(x_train)
-    Phi_val = model.build_phi_all(x_val)
 
     F1 = D * basis_size(K1, include_linear_1, basis_name_val)
     if K2 > 0:

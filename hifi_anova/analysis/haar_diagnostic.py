@@ -17,9 +17,7 @@ Usage:
               f"{result['per_variable'][i]['dominant_scale']}")
 """
 
-import jax.numpy as jnp
-import numpy as np
-from typing import Optional
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 
 from ..core.haar import HaarBasis
 
@@ -189,7 +187,6 @@ def haar_multi_basis_characterization(
     primary_sobol = sobol.get('mean_sobol', {}).get('first_order', {})
 
     # Haar analysis on residual
-    haar = HaarBasis(max_scale)
     haar_result = haar_residual_analysis(residual, x_data, max_scale,
                                          significance_threshold)
 

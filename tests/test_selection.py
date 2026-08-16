@@ -213,3 +213,45 @@ class TestUnifiedInterface:
                 signal_data['D'], signal_data['K1'],
                 signal_data['reg_diag'], method='invalid',
             )
+
+
+class TestGroupSizeWeights:
+    """Test the √df_g size-weight calibration (advisor item #1)."""
+
+    def test_df_equals_p_for_full_rank_blocks(self):
+        from hifi_anova.training.sparse import group_size_weights
+        # Mixed-size groups: first-order (7), pair (49), triple (343).
+        G1 = np.asarray(build_gram_matrix(3))            # 7x7, full rank
+        from hifi_anova.core.gram import build_gram_matrix_2d
+        G2 = np.asarray(build_gram_matrix_2d(G1))        # 49x49, full rank
+        gs = [slice(0, 7), slice(7, 56)]
+        grams = [G1, G2]
+        w = group_size_weights(gs, grams, mode='df')
+        # rank == block size for these full-rank Kronecker Gram blocks
+        assert np.isclose(w[0], np.sqrt(7))
+        assert np.isclose(w[1], np.sqrt(49))
+
+    def test_p_mode_uses_block_size(self):
+        from hifi_anova.training.sparse import group_size_weights
+        gs = [slice(0, 3), slice(3, 3 + 27)]
+        w = group_size_weights(gs, None, mode='p', n_features=30)
+        assert np.allclose(w, [np.sqrt(3), np.sqrt(27)])
+
+    def test_none_mode_is_ones(self):
+        from hifi_anova.training.sparse import group_size_weights
+        gs = [slice(0, 3), slice(3, 30)]
+        w = group_size_weights(gs, None, mode='none', n_features=30)
+        assert np.allclose(w, 1.0)
+
+    def test_glasso_default_weight_still_selects_actives(self, signal_data):
+        """select_variables_glasso now defaults to √df_g weighting; on the
+        equal-size first-order groups here that is a uniform rescale, so the
+        active variables must still be recovered (the weight threads through
+        both gamma_max and the solve without breaking selection)."""
+        active, info = select_variables_glasso(
+            signal_data['Phi1'], signal_data['y'],
+            signal_data['D'], signal_data['K1'],
+            signal_data['reg_diag'], n_gamma=25, verbose=False,
+        )
+        for v in signal_data['active_true']:
+            assert v in active

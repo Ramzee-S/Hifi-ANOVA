@@ -11,16 +11,16 @@ purely through its interaction with x1.
 Here we make it *heteroscedastic* by driving the noise variance with x3 as well.
 That turns x3 into the textbook "hidden driver": near-invisible to mean
 first-order importance, yet the sole driver of the predictive *variance*. It is
-exactly the case ordinary feature-importance misses and the dual mean+variance
+exactly the case ordinary feature-importance misses and the dual mean/log-variance
 Sobol spectrum was built for.
 
 The script demonstrates, end to end:
   1. Recovery of the analytic Ishigami mean Sobol indices (first- and total-order).
-  2. The dual spectrum: mean vs variance sensitivity, side by side.
+  2. The dual spectrum: mean sensitivity vs log-variance index, side by side.
   3. Interaction discovery — the residual sieve rediscovering the x1-x3 pair.
   4. Calibration of the fitted heteroscedastic model.
   5. A NEW visualization: the dual-sensitivity plane, each variable an ellipse
-     whose position is (mean Sobol, variance Sobol) and whose size is the
+     whose position is (mean Sobol, log-variance index S^h) and whose size is the
      bootstrap CI of those indices.
 
 Run from the repo root (writes ./figures/):
@@ -135,7 +135,7 @@ def fit_diagnostics(model, transformer, seed=999):
     ax.set_title('True vs predicted mean surface  (slice $x_3=0$)')
     fig.savefig('figures/ishigami_surface.png', dpi=150, bbox_inches='tight')
 
-    # (3) Variance recovery: predicted std vs true noise std.
+    # (3) Fitted residual-scale recovery: predicted std vs true noise std.
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.scatter(sig_e, sig_pred, s=8, alpha=0.3, color='steelblue')
     lim = [min(sig_e.min(), sig_pred.min()) - 0.1,
@@ -145,13 +145,15 @@ def fit_diagnostics(model, transformer, seed=999):
     corr = float(np.corrcoef(sig_e, sig_pred)[0, 1])
     ax.set_xlabel(r'true noise std $\sigma(x)$')
     ax.set_ylabel(r'predicted std $\hat\sigma(x)$')
-    ax.set_title(rf'Variance recovery: $\hat\sigma$ vs $\sigma$  (corr={corr:.3f})')
+    ax.set_title(
+        rf'Fitted residual-scale recovery: $\hat\sigma$ vs $\sigma$  '
+        rf'(corr={corr:.3f})')
     fig.tight_layout()
     fig.savefig('figures/ishigami_variance_fit.png', dpi=150, bbox_inches='tight')
 
-    # (4) Prediction intervals from the mean+variance model, on a clean 1-D slice.
+    # (4) Prediction intervals from the mean + log-variance fit on a clean slice.
     # Fix x1=0 (removes the x1-x3 interaction so the mean is flat) and x2=pi/2
-    # (sin^2 = 1), leaving x3 — the variance driver — free. The band is
+    # (sin^2 = 1), leaving x3 — the multiplicative residual-scale driver — free.
     # mean +/- 2*sigma(x) from the fitted mean AND variance models together; it
     # should widen with x3 and track the true +/-2 sigma. Points are fresh noisy
     # samples drawn at the slice, for illustration.
@@ -169,8 +171,8 @@ def fit_diagnostics(model, transformer, seed=999):
                     label='predicted 95% interval')
     ax.plot(x3g, f_s + 2 * sig_true_s, 'g:', lw=1.2, label=r'true $\pm 2\sigma(x_3)$')
     ax.plot(x3g, f_s - 2 * sig_true_s, 'g:', lw=1.2)
-    ax.set_xlabel(r'$x_3$  (the variance driver)'); ax.set_ylabel('y')
-    ax.set_title(r'Prediction intervals from the mean+variance model '
+    ax.set_xlabel(r'$x_3$  (log-variance driver)'); ax.set_ylabel('y')
+    ax.set_title(r'Prediction intervals from the mean + log-variance fit '
                  r'(slice $x_1=0,\ x_2=\pi/2$)')
     ax.legend(loc='upper center', fontsize=8, ncol=2)
     ax.grid(alpha=0.3)
@@ -190,10 +192,10 @@ def _fit_silent(config, xtr, ytr, xval, yval):
 
 
 def bootstrap_dual_sobol_ci(data, config, n_boot, n_sub, seed=0):
-    """Bootstrap CIs on first-order mean & variance Sobol indices.
+    """Bootstrap CIs on first-order mean and log-variance indices.
 
     Resamples the (already transformed) training set with replacement, refits,
-    and records the first-order mean and variance Sobol indices each time. The
+    and records the first-order mean and log-variance indices each time. The
     structural indices need no test data, so this is a direct measure of how
     stable the dual spectrum is under resampling.
 
@@ -212,8 +214,8 @@ def bootstrap_dual_sobol_ci(data, config, n_boot, n_sub, seed=0):
         model, _ = _fit_silent(config, xtr[idx], ytr[idx], xval, yval)
         s = compute_sobol_indices(model)
         mf = s['mean_sobol']['first_order']
-        vf = (s['variance_sobol']['first_order']
-              if 'variance_sobol' in s else {i: 0.0 for i in range(D)})
+        vf = (s['log_variance_sobol']['first_order']
+              if 'log_variance_sobol' in s else {i: 0.0 for i in range(D)})
         for i in range(D):
             mean_draws[i].append(float(mf.get(i, 0.0)))
             var_draws[i].append(float(vf.get(i, 0.0)))
@@ -231,10 +233,11 @@ def main():
     os.makedirs('figures', exist_ok=True)
 
     print("=" * 70)
-    print("HETEROSCEDASTIC ISHIGAMI — dual mean+variance Sobol showcase")
+    print("HETEROSCEDASTIC ISHIGAMI — dual mean/log-variance showcase")
     print("=" * 70)
     print("  f(x) = sin(x1) + 7*sin^2(x2) + 0.1*x3^4*sin(x1),   x_i ~ U(-pi,pi)")
-    print("  noise std ramps 0.3 -> 3.0 across x3  (x3 drives the VARIANCE)")
+    print("  noise std ramps 0.3 -> 3.0 across x3  "
+          "(x3 drives the multiplicative residual scale)")
 
     # ---- Ground truth ---------------------------------------------------
     gt = ishigami_sobol_indices(a=7.0, b=0.1)
@@ -262,8 +265,9 @@ def main():
     print("-" * 70)
     mf = sobol['mean_sobol']['first_order']
     mt = sobol['mean_sobol']['total_order']
-    vf = sobol['variance_sobol']['first_order']
-    print(f"  {'var':<5}{'meanS1(fit/true)':<22}{'meanST(fit/true)':<22}{'varS1'}")
+    vf = sobol['log_variance_sobol']['first_order']
+    print(f"  {'var':<5}{'meanS1(fit/true)':<22}{'meanST(fit/true)':<22}"
+          f"{'logvarS1'}")
     for i in range(3):
         print(f"  x{i+1:<4}"
               f"{mf[i]:.3f} / {gt['first_order'][i]:<11.3f}"
@@ -273,7 +277,7 @@ def main():
     print("\n  Reading it:")
     print("   - x1, x2 drive the MEAN (first-order); x3's mean first-order ~ 0.")
     print("   - x3's mean TOTAL-order > 0 — it lives entirely in the x1-x3 pair.")
-    print(f"   - x3 dominates the VARIANCE spectrum (S^h = {vf[2]:.3f}):")
+    print(f"   - x3 dominates the LOG-VARIANCE spectrum (S^h = {vf[2]:.3f}):")
     print("     a hidden driver, invisible to mean first-order importance.")
 
     top_pair = max(sobol['mean_sobol']['second_order'].items(),
@@ -322,7 +326,7 @@ def main():
             data, CONFIG, N_BOOT, BOOT_SUBSAMPLE, seed=7)
         for i in range(3):
             print(f"  x{i+1}: mean S1 in [{mean_ci[i][0]:.3f}, {mean_ci[i][1]:.3f}]"
-                  f"   var S1 in [{var_ci[i][0]:.3f}, {var_ci[i][1]:.3f}]")
+                  f"   log-var S1 in [{var_ci[i][0]:.3f}, {var_ci[i][1]:.3f}]")
 
     # ---- Model verification (self-consistency health check) -------------
     print("\n" + "-" * 70)
@@ -341,9 +345,9 @@ def main():
     print(f"    first-order : {va['first_order_total'] / tot:6.1%}")
     print(f"    second-order: {va['second_order_total'] / tot:6.1%}")
     print(f"    residual    : {va['residual'] / tot:6.1%}")
-    vh = sobol['variance_sobol']['variance_accounting']
+    vh = sobol['log_variance_sobol']['variance_accounting']
     toth = vh['total'] if vh['total'] > 0 else 1.0
-    print("  Variance model  log Var[y|x]  — variance explained by order:")
+    print("  Log-variance model  log Var[y|x]  — allocation by order:")
     print(f"    first-order : {vh['first_order_total'] / toth:6.1%}  (x3 alone)")
     print(f"    second-order: {vh['second_order_total'] / toth:6.1%}")
 
@@ -377,14 +381,14 @@ def main():
     plot_pareto_frontier(path, y_var, save_path='figures/ishigami_pareto.png')
 
     # Variance-model path: hold the mean fixed and sweep the variance penalty
-    # lambda_h. x3 dominates the variance spectrum across the whole range.
+    # lambda_h. x3 dominates the log-variance spectrum across the whole range.
     vpath = compute_variance_reg_path(
         model, data['x_train'], data['y_train'],
         strategy='variance', n_lambdas=30, lambda_h_range=(1e-3, 1e2))
     plot_variance_reg_path(vpath, VAR_NAMES, lambda_h_used=CONFIG['lambda_h'],
                            save_prefix='figures/ishigami')
     x3_share = vpath['sobol_h_paths'][2]
-    print(f"  Variance model (lambda_h path): x3's variance Sobol stays "
+    print(f"  Log-variance model (lambda_h path): x3's S^h stays "
           f"{x3_share.min():.2f}-{x3_share.max():.2f} across lambda_h "
           f"[1e-3, 1e2].")
 
@@ -396,11 +400,12 @@ def main():
           "Sobol paths, variance decomposition)")
     print("  figures/ishigami_pareto.png           (complexity vs unexplained "
           "variance)")
-    print("  figures/ishigami_var_reg_path.png     (variance-model Sobol vs "
+    print("  figures/ishigami_var_reg_path.png     (log-variance indices vs "
           "lambda_h)")
     plot_dual_sobol(sobol, VAR_NAMES,
                     save_path='figures/ishigami_dual_sobol.png')
-    print("  figures/ishigami_dual_sobol.png       (paired mean/variance bars)")
+    print("  figures/ishigami_dual_sobol.png       "
+          "(paired mean/log-variance bars)")
 
     plot_sensitivity_ellipses(
         sobol, VAR_NAMES, mode='glyph',

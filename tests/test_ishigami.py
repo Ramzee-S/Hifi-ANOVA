@@ -89,7 +89,7 @@ def test_plot_sensitivity_ellipses_both_modes():
             'total_order': {0: 0.56, 1: 0.44, 2: 0.24},
             'second_order': {(0, 2): 0.24},
         },
-        'variance_sobol': {'first_order': {0: 0.0, 1: 0.0, 2: 1.0}},
+        'log_variance_sobol': {'first_order': {0: 0.0, 1: 0.0, 2: 1.0}},
     }
     fig_g = plot_sensitivity_ellipses(sobol, mode='glyph')
     assert fig_g is not None
@@ -201,8 +201,8 @@ def test_heteroscedastic_ishigami_variance_driver():
         data['x_train'], data['y_train'], data['x_val'], data['y_val'])
     s = compute_sobol_indices(model, data['x_test'])
 
-    assert 'variance_sobol' in s
-    vf = s['variance_sobol']['first_order']
+    assert 'log_variance_sobol' in s
+    vf = s['log_variance_sobol']['first_order']
     # x3 (the hidden driver) dominates the variance; x1/x2 near zero.
     assert vf[2] > 0.8
     assert vf[0] < 0.1 and vf[1] < 0.1

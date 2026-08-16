@@ -157,7 +157,12 @@ class TestRidgeSolveWithDiagnostics:
             )
 
     def test_gcv_formula(self):
-        """GCV = mse / (1 - df/N)² — verify against manual computation."""
+        """GCV = mse / (1 - (df + INTERCEPT_DF)/N)² — verify manually.
+
+        The criterion counts the profiled (centered-out) intercept via
+        INTERCEPT_DF; the returned 'df' stays tr(H).
+        """
+        from hifi_anova.training.hyperopt import INTERCEPT_DF
         rng = np.random.RandomState(3)
         N, F = 280, 18
         Phi = rng.randn(N, F)
@@ -167,14 +172,15 @@ class TestRidgeSolveWithDiagnostics:
 
         result = self._run(Phi, y, reg_diag)
 
-        gcv_manual = result['mse'] / max(1e-10, (1.0 - result['df'] / N))**2
+        df_sel = result['df'] + INTERCEPT_DF
+        gcv_manual = result['mse'] / max(1e-10, (1.0 - df_sel / N))**2
         np.testing.assert_allclose(
             result['gcv'], gcv_manual, rtol=1e-8,
             err_msg=f"GCV={result['gcv']:.6f} vs manual={gcv_manual:.6f}"
         )
 
     def test_aic_bic_formula(self):
-        """AIC = N*log(mse) + 2*df and BIC = N*log(mse) + log(N)*df."""
+        """AIC/BIC = N*log(mse) + pen*(df + INTERCEPT_DF) (profiled intercept)."""
         rng = np.random.RandomState(4)
         N, F = 260, 16
         Phi = rng.randn(N, F)
@@ -184,8 +190,10 @@ class TestRidgeSolveWithDiagnostics:
 
         result = self._run(Phi, y, reg_diag)
 
-        aic_manual = N * np.log(max(result['mse'], 1e-15)) + 2.0 * result['df']
-        bic_manual = N * np.log(max(result['mse'], 1e-15)) + np.log(N) * result['df']
+        from hifi_anova.training.hyperopt import INTERCEPT_DF
+        df_sel = result['df'] + INTERCEPT_DF
+        aic_manual = N * np.log(max(result['mse'], 1e-15)) + 2.0 * df_sel
+        bic_manual = N * np.log(max(result['mse'], 1e-15)) + np.log(N) * df_sel
 
         np.testing.assert_allclose(result['aic'], aic_manual, rtol=1e-8,
                                    err_msg="AIC formula mismatch")

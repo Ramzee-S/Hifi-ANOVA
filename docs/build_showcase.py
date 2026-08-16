@@ -31,20 +31,19 @@ def F(file, alt, cap):
 
 SECTIONS = [
     {'num': 1,
-     'title': 'The dual Sobol spectrum — mean vs variance sensitivity',
+     'title': 'The dual spectrum — mean sensitivity vs log-variance index S^h',
      'body': [
-        ('p', 'Because the fit is linear in the basis coefficients, sensitivity '
-              'indices for both the conditional **mean** and the conditional '
-              '**variance** are read directly off a single solve — one pair '
-              'of numbers per variable.'),
+        ('p', 'For the fixed fitted configuration, the conditional-mean '
+              'sensitivity and fitted log-variance index are read from the '
+              'fitted coefficients — one pair of numbers per variable.'),
         ('fig', F('ishigami_sensitivity_glyphs.png',
                   'Dual-sensitivity ellipse glyphs per variable',
                   '**Dual-sensitivity glyphs.** Each variable is one ellipse: '
                   '**width ∝ its effect on the mean** E[y|x], and **height '
-                  '∝ its effect on the variance** Var[y|x]. x₁/x₂ '
+                  '∝ its fitted log-variance index** S^h. x₁/x₂ '
                   'are wide and flat (mean drivers); **x₃ is tall and '
                   'narrow** — it barely touches the mean yet drives the '
-                  'entire noise variance, the hidden-driver signature. The shape '
+                  'fitted multiplicative residual scale, the hidden-driver signature. The shape '
                   'tells the whole story at a glance.')),
      ]},
     {'num': 2,
@@ -56,9 +55,10 @@ SECTIONS = [
                   'Learned first-order component functions',
                   'x₁ recovers a sine, x₂ a squared-sine (two humps). '
                   '**x₃ is exactly flat** — its spurious main-effect '
-                  "block was removed by `first_order_pruning='bic'`, a group test "
-                  'that zeros an entire first-order block when the data does not '
-                  'support it. Plain ridge can only shrink such a block; it can '
+                  "block was removed by `first_order_pruning='bic'`, a "
+                  'model-selection heuristic that can zero an entire first-order '
+                  'block. It is not a calibrated significance test. Plain ridge '
+                  'can only shrink such a block; it can '
                   'never set it to zero.')),
      ]},
     {'num': 3,
@@ -97,7 +97,7 @@ SECTIONS = [
            'The mean is recovered well; the gap on the left is purely noise.')),
         ('fig', F('ishigami_intervals.png',
                   'Prediction intervals widen with x3',
-                  '**Prediction intervals from the mean + variance model.** A 1-D '
+                  '**Prediction intervals from the mean + log-variance fit.** A 1-D '
                   'slice (x₁ = 0, x₂ = π/2) so the mean is flat and '
                   'only the noise changes with x₃. The 95% band = mean ± '
                   '2σ̂(x) from both models together; it widens with '
@@ -109,9 +109,9 @@ SECTIONS = [
            '(blue) and the predicted mean (orange) overlap so closely they '
            'blend.'),
          F('ishigami_variance_fit.png', 'Predicted vs true noise std',
-           '**Variance recovery.** Predicted noise std σ̂(x) vs the true '
-           'σ(x) — correlation 0.99. The model does not just predict a '
-           'value, it predicts a calibrated, input-dependent uncertainty.')),
+           '**Fitted residual-scale recovery.** Predicted residual std σ̂(x) '
+           'vs the synthetic true σ(x) — correlation 0.99 in this in-sample '
+           'diagnostic.')),
      ]},
     {'num': 5,
      'title': 'Verifying the fit',
@@ -143,7 +143,7 @@ def render_md():
     p.append('# HiFi-ANOVA — a worked example on the heteroscedastic '
              'Ishigami function\n')
     p.append('*A visual tour of what the toolbox produces from one fit: the dual '
-             'mean+variance sensitivity spectrum, the learned effects, the '
+             'mean/log-variance spectrum, the learned effects, the '
              'regularization trade-offs, and how the fit holds up under noise.*\n')
     p.append('> There is also a standalone [HTML version](ishigami_showcase.html) '
              'of this page (light/dark, same content).\n')
@@ -160,8 +160,8 @@ def render_md():
              'through the x₁–x₃ interaction) but a **non-zero '
              'total-order** effect. A method that reports a first-order '
              'importance for x₃ is picking up noise.\n'
-             '- It is a **hidden variance driver**: it carries no mean signal yet '
-             'controls the entire noise variance — invisible to ordinary '
+             '- It is a **hidden log-variance driver**: it carries no mean signal yet '
+             'controls the fitted multiplicative residual scale — invisible to ordinary '
              'feature importance.\n')
     p.append('Analytic ground-truth first-order Sobol indices: **x₁ = 0.314, '
              'x₂ = 0.442, x₃ = 0.000**; x₃ total-order = 0.244.\n')
@@ -277,7 +277,7 @@ def render_html():
          '<h1>HiFi-ANOVA — a worked example on the heteroscedastic Ishigami '
          'function</h1>',
          '<p class="lede">A visual tour of what the toolbox produces from one '
-         'fit: the dual mean+variance sensitivity spectrum, the learned effects, '
+         'fit: the dual mean/log-variance spectrum, the learned effects, '
          'the regularization trade-offs, and how the fit holds up under noise.</p>',
          '</header>',
          '<p>The <b>Ishigami function</b> is a classic sensitivity-analysis '
@@ -294,8 +294,8 @@ def render_html():
          'through the x₁–x₃ interaction) but a <b>non-zero '
          'total-order</b> effect. A method that reports a first-order importance '
          'for x₃ is picking up noise.</li>'
-         '<li>It is a <b>hidden variance driver</b>: it carries no mean signal yet '
-         'controls the entire noise variance — invisible to ordinary feature '
+         '<li>It is a <b>hidden log-variance driver</b>: it carries no mean signal yet '
+         'controls the fitted multiplicative residual scale — invisible to ordinary feature '
          'importance.</li></ul>'
          'Analytic ground-truth first-order Sobol indices: <b>x₁ = 0.314, '
          'x₂ = 0.442, x₃ = 0.000</b>; x₃ total-order = 0.244.</div>',

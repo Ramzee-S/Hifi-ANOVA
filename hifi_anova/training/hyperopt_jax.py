@@ -55,24 +55,26 @@ def _criterion_core(loglams, Phi, y, C, b, shapes, N, method):
     rss = resid @ resid
     df = jnp.trace(jnp.linalg.solve(A, C))              # tr(A^{-1} C)
 
+    # Criteria count the profiled (centered-out) intercept: df + 1.0, matching
+    # hyperopt.INTERCEPT_DF (constant in lambda, so gradients are unaffected).
     if method == 'gcv':
         u = rss / N
-        v = jnp.maximum(1e-10, 1.0 - df / N)
+        v = jnp.maximum(1e-10, 1.0 - (df + 1.0) / N)
         return u / v ** 2
     if method in ('aic', 'bic'):
         mse = jnp.maximum(rss / N, 1e-15)
         pen = 2.0 if method == 'aic' else jnp.log(float(N))
-        return N * jnp.log(mse) + pen * df
+        return N * jnp.log(mse) + pen * (df + 1.0)
     if method == 'evidence':
         P = y @ resid
         sigma2 = jnp.maximum(P / N, 1e-15)
         _, logdetA = jnp.linalg.slogdet(A)
-        # log|R| over the structurally-supported entries. The support is fixed
-        # (union of the shapes' supports), so the mask is static in lambda; the
-        # double-`where` keeps log's gradient finite on the masked-out entries.
-        pos = jnp.sum(shapes, axis=0) > 0.0
-        safe_reg = jnp.where(pos, reg, 1.0)
-        logdetR = jnp.sum(jnp.where(pos, jnp.log(safe_reg), 0.0))
+        # Floored log|R|: unpenalized entries (reg == 0) enter at the proper-
+        # prior floor, matching hyperopt._REG_FLOOR and the dual form's R^{-1}
+        # cap, so log|K| = log|A| - log|R| stays a valid evidence. Floored
+        # entries are constant in lambda (gradient 0 through the maximum),
+        # matching the closed-form gradient's unfloored-entries-only count.
+        logdetR = jnp.sum(jnp.log(jnp.maximum(reg, 1e-12)))
         logdetK = logdetA - logdetR
         log_ev = (-N / 2.0 * jnp.log(sigma2) - 0.5 * logdetK
                   - N / 2.0 * (1.0 + jnp.log(2.0 * jnp.pi)))

@@ -227,3 +227,126 @@ def test_hyperprior_pulls_lambda_h():
                                n_grid=9, n_folds=3, seed=1,
                                hyperprior=(np.log10(r0['lambda_h']) - 2.0, 0.5))
     assert r1['lambda_h'] < r0['lambda_h']
+
+
+# --------------------------------------------------------------------------- #
+# App. D determinant-derivative ("second") term — existence tripwire (DEC-033 / M4)
+#
+# LAML evaluates log|H_joint| at the fitted mode theta_hat(lambda); its
+# lambda-derivative carries a mode-motion term that vanishes for fixed-variance
+# ridge but NOT for the joint heteroscedastic likelihood (Manuscript_Theoryv06.tex
+# App. D). Current selection is derivative-free, so nothing is wrong today; the fence
+# (DEC-033) is that any FUTURE joint-LAML gradient must differentiate through the
+# (leverage-corrected) mode solve. An AD gradient built over a NON-traced (frozen)
+# mode silently drops the term. This tripwire is EXISTENCE-based: it verifies the
+# determinant-piece frozen-vs-full gap is large, robust and heteroscedastic-only, so
+# that a frozen-mode gradient would be caught. Evidence: dev/tests/
+# m4_laml_determinant_probe.py; the leverage subtlety: M4b_leverage_nonstationarity_note.md.
+# --------------------------------------------------------------------------- #
+import copy as _copy
+from hifi_anova.training.joint_lambda import _variance_hessians as _m4_vhess
+
+
+def _m4_problem(hetero_slope, N, seed=1):
+    """Self-contained fixture with a known determinant-term magnitude (matches the
+    probe). hetero_slope=0 => homoscedastic control."""
+    rng = np.random.RandomState(seed)
+    x = rng.uniform(-1, 1, size=(N, 1))
+    Phi = np.concatenate([x, x**2, x**3], axis=1)          # mean: x, x^2, x^3
+    Psi = x.copy()                                          # log-variance: linear
+    y = ((1.5 * x[:, 0] - 0.8 * x[:, 0] ** 2)
+         + np.exp(-1.0 + hetero_slope * x[:, 0]) * rng.randn(N))
+    return Phi, Psi, y
+
+
+def _m4_fit(Phi, Psi, y, lam_h):
+    Phi_aug = _augment(Phi)
+    reg_mean_aug = np.concatenate([[0.0], 1e-2 * np.ones(Phi.shape[1])])
+    return _joint_fit(Phi_aug, Psi, y, reg_mean_aug, lam_h * np.ones(Psi.shape[1]),
+                      leverage_correct=True, sigma2_floor=0.0, tol=1e-8, max_outer=40)
+
+
+def _m4_det_piece(fit):
+    return -0.5 * joint_laml(fit)['logdetH']
+
+
+def _m4_det_gap(Phi, Psi, y, t0=1.0, h=1e-3):
+    """Central-FD of d(-1/2 log|H|)/d log10(lambda_h): 'full' re-solves the mode at
+    each lambda_h (correct total derivative); 'frozen' holds the mode fixed (what an
+    AD gradient over a non-traced mode returns). Returns (gap, full, frozen)."""
+    lamp, lamm = 10.0 ** (t0 + h), 10.0 ** (t0 - h)
+    full = (_m4_det_piece(_m4_fit(Phi, Psi, y, lamp))
+            - _m4_det_piece(_m4_fit(Phi, Psi, y, lamm))) / (2 * h)
+    fit0 = _m4_fit(Phi, Psi, y, 10.0 ** t0)
+
+    def froz(lam):
+        f = _copy.copy(fit0)
+        f.reg_var = lam * np.ones(Psi.shape[1])
+        return _m4_det_piece(f)
+    frozen = (froz(lamp) - froz(lamm)) / (2 * h)
+    return full - frozen, full, frozen
+
+
+def _m4_cond_Hjoint(fit):
+    """Condition number of the (block-diagonal) joint Hessian whose log-determinant is
+    differentiated — asserted modest so the FD reference stays trustworthy."""
+    Phi_aug = fit.Phi_aug
+    H_ww = Phi_aug.T @ (fit.weights[:, None] * Phi_aug) + np.diag(fit.reg_mean_aug)
+    _, H_hh = _m4_vhess(fit)
+    a = H_ww.shape[0]
+    B = np.zeros((a + H_hh.shape[0], a + H_hh.shape[0]))
+    B[:a, :a] = H_ww
+    B[a:, a:] = H_hh
+    return float(np.linalg.cond(B))
+
+
+@pytest.mark.slow
+def test_appD_determinant_term_detectable_and_fenced():
+    """Tripwire for App. D's joint-LAML determinant-derivative term (DEC-033 / M4).
+
+    Existence-based: assert the determinant-piece gap is large, well conditioned, and
+    heteroscedastic-only, so any future frozen-mode gradient that drops the term is
+    caught. Asserts on the determinant piece, NOT total LAML (which confounds the
+    DEC-028 leverage non-stationarity, ~0.05).
+    """
+    # Well-conditioned heteroscedastic fixture, away from any variance floor.
+    Phi, Psi, y = _m4_problem(hetero_slope=1.3, N=200)
+    fit0 = _m4_fit(Phi, Psi, y, 10.0)
+    cond = _m4_cond_Hjoint(fit0)
+    assert fit0.sigma2.min() > 1e-3, "fixture must sit away from any variance floor"
+    assert cond < 1e6, f"fixture must be well conditioned for the FD reference (cond={cond:.2e})"
+
+    gap_h, full_h, frozen_h = _m4_det_gap(Phi, Psi, y)
+
+    # Homoscedastic control: the residual is a finite-sample floor, not a structural
+    # term, so it is small and decays with N. It is a random quantity per realization,
+    # so assert the trend SEED-AVERAGED over a wide N gap (a single (N,2N) pair is noisy).
+    def _mean_floor(N, seeds=(1, 2, 3, 4)):
+        return float(np.mean([abs(_m4_det_gap(*_m4_problem(0.0, N, seed=s))[0])
+                              for s in seeds]))
+    floor_smallN = _mean_floor(150)
+    floor_bigN = _mean_floor(600)
+
+    # (1) EXISTENCE: the term is materially nonzero on the heteroscedastic fixture.
+    assert abs(gap_h) > 0.05, f"App. D determinant term should be detectable; got {gap_h:.4f}"
+    # (2) GAP-TO-FLOOR >> 1: the heteroscedastic signal dominates the finite-sample floor.
+    assert abs(gap_h) > 20.0 * floor_smallN, \
+        f"gap-to-floor too small: |{gap_h:.4f}| vs floor |{floor_smallN:.4f}|"
+    # (3) HETEROSCEDASTIC-ONLY: seed-averaged floor is small and shrinks with N.
+    assert floor_bigN < floor_smallN, \
+        f"homoscedastic floor must decay with N ({floor_bigN:.4f} !< {floor_smallN:.4f})"
+    assert floor_bigN < 0.02, f"homoscedastic control not near zero: {floor_bigN:.4f}"
+
+    # (4) MUST-PASS / MUST-FAIL-IF-FROZEN, gated until a production gradient exists.
+    # A future analytic/AD joint-LAML gradient MUST match the FD-of-full reference and
+    # MUST NOT equal the frozen-mode value (which drops App. D's term).
+    from hifi_anova.training import joint_lambda as _jl
+    if hasattr(_jl, 'joint_laml_grad'):  # pragma: no cover - lands with a future gradient
+        g = float(_jl.joint_laml_grad(fit0)['d_neg_half_logdetH_dloglam'])
+        assert g == pytest.approx(full_h, rel=0.05), "gradient must match FD-of-full-LAML"
+        assert abs(g - frozen_h) > 0.5 * abs(gap_h), \
+            "gradient must NOT equal the frozen-mode value (App. D term silently dropped)"
+    else:
+        # No production gradient yet: confirm the two candidate answers genuinely differ,
+        # so the must-fail assertion retains power against a near-homoscedastic fixture edit.
+        assert abs(full_h - frozen_h) > 0.05

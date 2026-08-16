@@ -19,10 +19,7 @@ config. Without it, the sequential training (Fourier first, NN on residuals)
 provides approximate orthogonality. The projection provides an exact guarantee.
 """
 
-import jax
-import jax.numpy as jnp
-import numpy as np
-from typing import Optional
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 
 
 class FourierProjector:

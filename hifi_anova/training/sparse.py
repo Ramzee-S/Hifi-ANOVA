@@ -67,6 +67,73 @@ def _group_soft_threshold(v: np.ndarray, threshold: float,
         return np.zeros_like(v)
 
 
+def group_size_weights(
+    group_slices: List[slice],
+    gram_matrices: Optional[List[Optional[np.ndarray]]] = None,
+    mode: str = 'df',
+    n_features: Optional[int] = None,
+) -> np.ndarray:
+    """Per-group penalty size weights for group lasso (Yuan & Lin calibration).
+
+    The canonical group lasso weights each group's penalty by ``sqrt(df_g)`` so
+    that a single nominal ``gamma`` is comparable across groups of very different
+    cardinality — here first-order (``2K+1``), pairs (``(2K+1)^2``), triples
+    (``(2K+1)^3``) span two orders of magnitude within one joint fit. Without the
+    weight, larger (higher-order) groups are *easier* to keep active for a fixed
+    ``gamma``, biasing selection toward high-order interactions — the opposite of
+    the parsimony one wants.
+
+    Why ``sqrt(df_g)`` and not ``sqrt(tr(G_g))``, given the Gram-weighted group
+    norm ``||w_g||_G = sqrt(w_g^T G_g w_g)``:  under the null (group g is pure
+    noise) the unpenalised block estimate ``v_g`` has, when the empirical design
+    Gram matches the analytic one (``Phi_g^T Phi_g ~ N G_g``), covariance
+    ``~ sigma^2 (N G_g)^{-1}``, so ``E[||v_g||_G^2] = sigma^2 tr(G_g (N G_g)^{-1})
+    = sigma^2 df_g / N``.  The expected *Gram* norm therefore scales as
+    ``sqrt(df_g)`` regardless of ``tr(G_g)`` — the Gram norm already absorbs the
+    ``G_g`` geometry, so the coherent size weight is ``sqrt(df_g)`` and adding
+    ``tr(G_g)`` would double-count it.  ``sqrt(tr(G_g))`` is the right weight only
+    for a *Euclidean* group norm with Gram-coloured noise, which is not our path.
+    (df_g = rank(G_g); for the full-rank Fourier/Legendre/Haar blocks used here
+    rank(G_g) == p_g, the block size.)
+
+    Args:
+        group_slices: list of slice objects defining each group.
+        gram_matrices: per-group Gram matrices (or None). df_g = rank(G_g) when a
+            Gram is present, else the block size p_g.
+        mode: 'df'   -> sqrt(rank(G_g))  (== sqrt(p_g) for full-rank blocks; default)
+              'p'    -> sqrt(p_g)  (block size; skips the rank computation)
+              'none' -> all ones (no size calibration; legacy behaviour)
+        n_features: total feature count F, used to resolve open-ended slices.
+
+    Returns:
+        (n_groups,) array of positive weights.
+    """
+    n_groups = len(group_slices)
+    if mode == 'none':
+        return np.ones(n_groups, dtype=np.float64)
+
+    F = n_features
+    if F is None:
+        F = max((sl.stop for sl in group_slices if sl.stop is not None),
+                default=0)
+
+    weights = np.empty(n_groups, dtype=np.float64)
+    _rank_cache: dict = {}
+    for g, sl in enumerate(group_slices):
+        p_g = len(range(*sl.indices(F)))
+        G_g = gram_matrices[g] if gram_matrices is not None else None
+        if mode == 'df' and G_g is not None:
+            key = id(G_g)
+            if key not in _rank_cache:
+                _rank_cache[key] = int(np.linalg.matrix_rank(
+                    np.asarray(G_g, dtype=np.float64)))
+            df_g = _rank_cache[key]
+        else:
+            df_g = p_g
+        weights[g] = np.sqrt(max(df_g, 1))
+    return weights
+
+
 # =============================================================================
 # Lasso (L1 on individual coefficients)
 # =============================================================================
@@ -222,19 +289,23 @@ def group_lasso_solve(
     max_iter: int = 500,
     tol: float = 1e-5,
     warm_start: Optional[np.ndarray] = None,
+    size_weight: str = 'df',
+    group_weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Group Lasso: L1 on group norms for structured sparsity.
 
     min_w  1/(2N) ||y - Phi w||^2 + w^T diag(reg_l2) w
-           + gamma * sum_g ||w_g||_{G_g}
+           + gamma * sum_g sqrt(df_g) * ||w_g||_{G_g}
 
     Drives entire groups to exactly zero. With Gram-weighted norms,
-    the penalty reflects actual variance contribution.
+    the penalty reflects actual variance contribution; the per-group
+    ``sqrt(df_g)`` weight (Yuan & Lin) makes ``gamma`` comparable across
+    groups of different cardinality — see :func:`group_size_weights`.
 
     Block coordinate descent: for each group g:
       1. Compute partial residual r_g = y - Phi_{-g} w_{-g}
       2. Unconstrained update v_g = (Phi_g^T Phi_g + N*R_g)^{-1} Phi_g^T r_g
-      3. Group soft-threshold: w_g = S(v_g, N*gamma)
+      3. Group soft-threshold: w_g = S(v_g, N*gamma*sqrt(df_g))
 
     Args:
         Phi: (N, F) feature matrix
@@ -246,6 +317,9 @@ def group_lasso_solve(
         max_iter: maximum iterations
         tol: convergence tolerance
         warm_start: (F,) initial coefficients
+        size_weight: per-group size calibration ('df'|'p'|'none'); ignored if
+            ``group_weights`` is passed explicitly. Default 'df' == sqrt(rank(G_g)).
+        group_weights: precomputed per-group weights (overrides ``size_weight``).
 
     Returns:
         w: (F,) coefficient vector with some groups exactly zero
@@ -255,6 +329,10 @@ def group_lasso_solve(
     reg_l2 = np.asarray(reg_l2, dtype=np.float64)
     N, F = Phi.shape
     n_groups = len(group_slices)
+
+    if group_weights is None:
+        group_weights = group_size_weights(group_slices, gram_matrices,
+                                            mode=size_weight, n_features=F)
 
     w = warm_start.copy() if warm_start is not None else np.zeros(F, dtype=np.float64)
 
@@ -279,9 +357,9 @@ def group_lasso_solve(
             # Unconstrained solution
             v_g = A_inv_groups[g] @ (Phi_g.T @ r_g)
 
-            # Group soft-thresholding
+            # Group soft-thresholding (size-weighted: threshold N*gamma*sqrt(df_g))
             G_g = gram_matrices[g] if gram_matrices is not None else None
-            w[sl] = _group_soft_threshold(v_g, N * gamma, G_g)
+            w[sl] = _group_soft_threshold(v_g, N * gamma * group_weights[g], G_g)
 
         if np.max(np.abs(w - w_old)) < tol:
             break
@@ -304,11 +382,13 @@ def sparse_group_lasso_solve(
     adaptive_l1: bool = True,
     max_iter: int = 500,
     tol: float = 1e-5,
+    size_weight: str = 'df',
+    group_weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Sparse Group Lasso: group selection + within-group sparsity.
 
     min_w  1/(2N) ||y - Phi w||^2 + w^T diag(reg_l2) w
-           + gamma_group * sum_g ||w_g||_{G_g}
+           + gamma_group * sum_g sqrt(df_g) * ||w_g||_{G_g}
            + gamma_l1 * sum_j l1_weight[j] * |w_j|
 
     Combines:
@@ -341,6 +421,10 @@ def sparse_group_lasso_solve(
     reg_l2 = np.asarray(reg_l2, dtype=np.float64)
     N, F = Phi.shape
     n_groups = len(group_slices)
+
+    if group_weights is None:
+        group_weights = group_size_weights(group_slices, gram_matrices,
+                                            mode=size_weight, n_features=F)
 
     # Build adaptive L1 weights
     if adaptive_l1:
@@ -381,9 +465,9 @@ def sparse_group_lasso_solve(
             thresholds = N * gamma_l1 * l1_weights[sl]
             v_g = np.sign(v_g) * np.maximum(np.abs(v_g) - thresholds, 0.0)
 
-            # Step 2: Group soft-thresholding (group L1)
+            # Step 2: Group soft-thresholding (group L1, size-weighted)
             G_g = gram_matrices[g] if gram_matrices is not None else None
-            w[sl] = _group_soft_threshold(v_g, N * gamma_group, G_g)
+            w[sl] = _group_soft_threshold(v_g, N * gamma_group * group_weights[g], G_g)
 
         if np.max(np.abs(w - w_old)) < tol:
             break

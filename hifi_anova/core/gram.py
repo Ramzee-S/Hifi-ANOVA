@@ -9,7 +9,7 @@ Three basis families:
   basis_name='haar': identity matrix, (2^K-1)×(2^K-1)
 """
 
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 import numpy as np
 
 

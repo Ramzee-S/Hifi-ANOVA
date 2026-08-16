@@ -26,8 +26,10 @@ variables that drive uncertainty while carrying no mean signal.
 
 ## Installation
 
-Requires Python 3.10+. All linear algebra runs in float64 (JAX x64 is enabled
-automatically by the one-call API).
+Requires Python 3.10+. The one-call API enables JAX x64 automatically, and all
+post-fit analytics (Sobol decomposition, confidence intervals, prediction) run
+in float64. The model *fit* itself currently runs in float32 — see **Numerical
+precision** below.
 
 ```bash
 pip install -e .
@@ -56,10 +58,10 @@ intervals and diagnostics, returning one `HiFiResult`. Key knobs:
 |---|---|
 | `K1`, `K2` | max harmonic / basis richness for first- and second-order terms |
 | `mode` | complexity: `'first'`, `'second'` (default), `'full'`, `'heteroscedastic'`, `'auto'` |
-| `strategy` | regularization shape: `'variance'` (default), `'smoothness'`, `'curvature'`, … |
+| `strategy` | regularization shape (default resolves to `'curvature'` when heteroscedastic, else `'variance'`): `'variance'`, `'smoothness'`, `'curvature'`, … |
 | `variable_selection` | prune spurious main effects: `'bic'` (default), `'group_lasso'`, `'1se'`, `None` |
 | `residual` | add a nonlinear residual model: `'rbf'`, `'rff'`, `'nystrom'`, `None` |
-| `heteroscedastic` | also fit the variance model (dual Sobol spectrum) |
+| `heteroscedastic` | also fit the variance model (dual Sobol spectrum); off by default — the default fit models only the mean |
 
 ### The staged API — full control
 
@@ -150,6 +152,22 @@ result = hifi_anova(X, y, heteroscedastic=True, Kh=3)   # adds Stage D
 
 - Fits a log-variance functional-ANOVA model by an IRLS/Newton alternation
   (`training/trainer.py::_fit_heteroscedastic`, `training/newton.py`).
+- **Stable by construction (DEC-028).** The variance solve consumes
+  leverage-corrected squared residuals `r²/(1−lev)` (raw in-sample residuals
+  under-report σ² where the mean fits tightly, which used to destabilize the
+  loop on rich bases), and the loop keeps the best outer iterate by held-out
+  likelihood rather than iterating to a possibly-degraded convergence point
+  (`leverage_correction`, `alternating_early_stop`; both on by default).
+- **Safe by default (a variance model must earn its place).** Stage D always
+  compares the fitted heteroscedastic model against a constant-variance baseline
+  (same leverage-corrected σ̂²) on held-out likelihood and keeps it only if it
+  wins; on near-noiseless or homogeneous-noise data (or if the fit degrades the
+  mean) it reverts to a constant variance and emits a warning naming the cause.
+  So turning `heteroscedastic=True` on data that isn't actually heteroscedastic
+  costs you a warning, not a silently-corrupted fit. Tune or disable via
+  `heteroscedastic_guard`, `min_noise_ratio`, `variance_selection_margin`
+  (defaults on; see USER_GUIDE §4.8). The one-call API also picks
+  `strategy='curvature'` automatically here.
 - **Variance regularization path** — `compute_variance_reg_path(...)` sweeps the
   variance penalty `λ_h` with the mean fixed, recording the variance-Sobol spectrum.
 - **Joint λ selection** — `optimize_joint_lambda(...)` picks a principled `λ_h`
@@ -205,8 +223,17 @@ Synthetic benchmarks (Friedman-1, Ishigami incl. heteroscedastic) are in
   curves are reported in that space.
 - **Report your strategy.** Attribution depends on the regularization `strategy`;
   state which one you used when reporting indices (see USER_GUIDE §6).
-- **float64 throughout.** The one-call API enables JAX x64; low-level helpers expect
-  float64 designs.
+- **Numerical precision.** The one-call API enables JAX x64, and the post-fit
+  analytics (Sobol decomposition, confidence intervals, prediction) run in
+  float64. The model fit itself — feature construction, the ridge solves, and the
+  heteroscedastic alternating mean/variance loop — runs in **float32 by default**
+  (inputs are cast to float32 during preprocessing and the model weights are
+  float32), which is adequate for the analytics precision the package targets
+  (computed off the fitted design in float64). To fit in float64 instead, pass
+  `hifi_anova(..., precision="float64")` — the model weights and predictions then
+  come back float64 (equivalently, set the `HIFI_ANOVA_X64=1` environment
+  variable, which also covers low-level callers). If you call low-level fit
+  helpers directly, the fit dtype follows the dtype of the arrays you pass in.
 - **Variance selection is intrinsically noisy** — a single squared residual carries
   little information about `σ²(x)`, so the joint-λ selector defaults to k-fold and
   emits diagnostic warnings when the variance model may be overfitting.

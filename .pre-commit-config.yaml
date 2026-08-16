@@ -1,0 +1,32 @@
+# Pre-commit hooks for HiFi-ANOVA.
+#
+#   pip install -e ".[dev]"     # brings in pre-commit
+#   pre-commit install          # activate the hooks for this clone
+#   pre-commit run --all-files  # run once over the whole tree
+#
+# Policy: the ruff hook enforces the full pyproject rule set (E4, E7, E9, F).
+# The cosmetic backlog (unused imports / dead locals / ambiguous names) was
+# paid down, so the hook now matches the CI gate. The hygiene hooks
+# below only touch *staged* files. No
+# formatter (black / ruff-format) is wired in yet: the tree is hand-formatted
+# to a 79-col style that a formatter would rewrite wholesale, so that is a
+# deliberate one-time decision, not a hook.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        name: ruff (E4,E7,E9,F)
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.(md|tex|json|csv)$'
+      - id: end-of-file-fixer
+        exclude: '\.(md|tex|json|csv|png|pdf)$'
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]

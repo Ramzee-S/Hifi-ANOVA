@@ -97,10 +97,16 @@ class TestGroupLasso:
                 f"Group {g} partially zero: {n_zero_in_group}/{block}"
 
     def test_keeps_active_variables(self, sparse_data):
-        """With small gamma, active variables should survive."""
+        """With small gamma, active variables should survive.
+
+        The default penalty is now the size-calibrated ``γ·√df_g·||w_g||_G``
+        (Yuan & Lin), so the effective threshold is √df_g ≈ √7 larger than the
+        un-weighted solver; the nominal γ that keeps actives alive is
+        correspondingly smaller.
+        """
         w = group_lasso_solve(sparse_data['Phi'], sparse_data['y'],
                                sparse_data['group_slices'], sparse_data['reg'],
-                               gamma=0.0005)
+                               gamma=0.0002)
         for v in sparse_data['active_true']:
             sl = sparse_data['group_slices'][v]
             assert np.linalg.norm(w[sl]) > 1e-5, \
@@ -110,11 +116,72 @@ class TestGroupLasso:
         """Gram-weighted group lasso should also work."""
         w = group_lasso_solve(sparse_data['Phi'], sparse_data['y'],
                                sparse_data['group_slices'], sparse_data['reg'],
-                               gamma=0.0005,
+                               gamma=0.0002,
                                gram_matrices=sparse_data['gram_matrices'])
         for v in sparse_data['active_true']:
             sl = sparse_data['group_slices'][v]
             assert np.linalg.norm(w[sl]) > 1e-5
+
+    def test_size_weight_default_is_df(self, sparse_data):
+        """Default 'df' weighting == passing √p_g explicitly (equal-size groups).
+
+        With all groups the same block size, size_weight='df' is a uniform
+        √p_g rescale of the threshold, so it must match an explicit
+        group_weights=√p_g and be a strict shrink relative to size_weight='none'.
+        """
+        block = sparse_data['block']
+        D = sparse_data['D']
+        gs, reg = sparse_data['group_slices'], sparse_data['reg']
+        Phi, y = sparse_data['Phi'], sparse_data['y']
+
+        w_df = group_lasso_solve(Phi, y, gs, reg, gamma=0.001)
+        w_explicit = group_lasso_solve(
+            Phi, y, gs, reg, gamma=0.001,
+            group_weights=np.full(D, np.sqrt(block)))
+        w_none = group_lasso_solve(Phi, y, gs, reg, gamma=0.001,
+                                   size_weight='none')
+
+        assert np.allclose(w_df, w_explicit, atol=1e-8)
+        # √df_g > 1 ⇒ heavier penalty ⇒ at least as many zeroed groups as 'none'.
+        n_active_df = sum(np.linalg.norm(w_df[s]) > 1e-8 for s in gs)
+        n_active_none = sum(np.linalg.norm(w_none[s]) > 1e-8 for s in gs)
+        assert n_active_df <= n_active_none
+
+    def test_size_weight_removes_cardinality_bias(self):
+        """The core #1 bug: at a fixed nominal γ, a larger group is easier to
+        keep active purely by cardinality (‖v_g‖ grows like √p_g under the null),
+        biasing selection toward high-order interactions. √df_g calibration must
+        remove that bias.
+
+        Two PURE-NOISE groups of sizes 3 and 27 (mirroring the 2K+1 vs (2K+1)³
+        cardinality span). Measure each group's survival γ — the largest γ at
+        which it stays active. Un-weighted, the big group survives to a strictly
+        higher γ (bias > 1); with 'df' that ratio is driven down (bias removed).
+        """
+        rng = np.random.RandomState(0)
+        N = 4000
+        Phi = rng.randn(N, 30)
+        y = rng.randn(N)
+        y = y - y.mean()
+        gs = [slice(0, 3), slice(3, 30)]   # sizes 3 and 27, both pure noise
+        reg = np.full(30, 1e-6)
+
+        def survival_gamma(size_weight, gi):
+            surv = 0.0
+            for gamma in np.logspace(-6, -2, 80):
+                w = group_lasso_solve(Phi, y, gs, reg, gamma=gamma,
+                                      size_weight=size_weight)
+                if np.linalg.norm(w[gs[gi]]) > 1e-8:
+                    surv = gamma
+            return surv
+
+        bias_none = survival_gamma('none', 1) / survival_gamma('none', 0)
+        bias_df = survival_gamma('df', 1) / survival_gamma('df', 0)
+
+        assert bias_none > 1.2, (
+            f"un-weighted big group should survive to higher γ, bias={bias_none:.2f}")
+        assert bias_df < bias_none, (
+            f"√df_g should reduce cardinality bias: {bias_df:.2f} vs {bias_none:.2f}")
 
 
 class TestSparseGroupLasso:

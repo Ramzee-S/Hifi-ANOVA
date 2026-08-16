@@ -7,20 +7,35 @@ HiFi-ANOVA — *Hoeffding Interaction–Fidelity ANOVA* — fits a functional-AN
 **variance** of a response, realized over three interchangeable basis families
 (**Fourier, Legendre, Haar**). Because the fit is linear in the basis
 coefficients, sensitivity indices, uncertainty estimates, and structure-discovery
-diagnostics are read directly off a single ridge solve — the model is
-interpretable *by design*, not explained post-hoc.
+diagnostics reuse the finalized ridge system — the model is interpretable *by
+design*, not explained post-hoc. Selection, lambda optimization, and joint
+mean--variance training can require additional factorizations before the final
+configuration is fixed.
 
 This guide documents the library as implemented. Every option, default, and code
 snippet below is drawn from the source in `hifi_anova/`. It targets Python 3.10+
 and assumes the `jax` / `equinox` scientific stack described in the top-level
 `README.md`.
 
+> **Mixed-basis boundary.** A different fixed Fourier/Legendre/Haar family per
+> variable is currently supported for the Stage-A/B mean model, all retained
+> pairs, and block-correct Sobol diagnostics. Mixed selection/pruning, Stage C,
+> Stage D, and `K3>0` are not supported; see the capability matrix in §7. The
+> complete automated mean/variance pipeline remains available on uniform bases.
+
+> **Implemented scope vs manuscript program (0.3.0).** The package implements
+> the v07 model geometry and fixed-configuration diagnostics. It does **not**
+> expose the reusable FDR-controlled efficient-score ladder, the honest three-way
+> selection/inference/reporting workflow, or post-selection guarantees. BIC,
+> group lasso, the 1-SE rule, pruning, and residual-sieve thresholds are model-
+> selection heuristics, not Theorem-2 tests.
+
 > Positioning, honestly stated. Computing analytic Sobol indices from the
 > coefficients of an orthogonal-basis regression is well established — it
 > underlies variance decomposition in polynomial chaos expansions (PCE) and
 > RS-HDMR. What is distinctive here is the combination: a **dual mean +
-> variance** Sobol spectrum, **three basis families** with per-variable effect
-> signatures, and a **one-solve diagnostic suite** (closed-form LOO, GCV,
+> log-variance** Sobol spectrum, **three basis families** with per-variable effect
+> signatures, and a **fixed-configuration diagnostic suite** (closed-form LOO, GCV,
 > sandwich/delta confidence intervals, regularization paths, interaction
 > screening). HiFi-ANOVA trades a little predictive accuracy for interpretability;
 > it is not primarily a top-tier predictor.
@@ -70,7 +85,7 @@ log Var[y | x] = h₀ + Σᵢ hᵢ(xᵢ) [+ pairs] [+ triples] [+ residual]
 This yields a **dual Sobol spectrum**: every variable gets one index for its
 effect on the expected outcome and one for its effect on the predictive
 *uncertainty*. Variables that shape uncertainty but carry no mean signal (a
-"hidden" heteroscedastic driver) show up in the variance spectrum while being
+"hidden" heteroscedastic driver) show up in the log-variance spectrum while being
 invisible to ordinary feature importance.
 
 ### Sobol indices, analytically
@@ -113,14 +128,62 @@ pip install -e .
 #           pip install -e ".[dev]"      # pytest
 ```
 
-All linear algebra runs in float64. The one-call `hifi_anova(...)` enables JAX
-x64 automatically (on the first call); if you call lower-level functions
-directly, set it yourself:
+`precision=` selects the requested model/storage dtype. The default model weights
+and storage are float32, while selected post-fit analytics and Stage-D linear
+solves are promoted to float64. Requesting `precision="float64"` also makes the
+model/storage path float64. The implementation is therefore mixed precision;
+neither setting should be read as an end-to-end float32 claim.
+
+The effective fit precision resolves by this precedence (highest first):
+
+1. an explicit `hifi_anova(..., precision="float64")` argument (or
+   `config['precision']`);
+2. a process-wide `hifi_anova.precision.set_fit_precision("float64")` override;
+3. the `HIFI_ANOVA_X64=1` environment variable;
+4. otherwise the `"float32"` default.
+
+An explicit argument always wins over the global override and the environment, so
+`precision="float32"` forces float32 even when `HIFI_ANOVA_X64=1` is set — use it
+to pin a single call against a global opt-in. An unrecognized `HIFI_ANOVA_X64`
+value (e.g. a typo) is **not** silently reinterpreted: it warns and is ignored.
+The *effective* precision is recorded in `result.config['precision']` and in the
+saved `meta.json`. (Earlier releases hard-coded the default so the env/override
+controls did not reach an ordinary one-call fit; fixed in DEC-044.)
+
+If you call lower-level functions directly and want float64, enable x64 yourself
+*and* pass float64 arrays:
 
 ```python
 import jax
 jax.config.update("jax_enable_x64", True)
 ```
+
+### Compute backend — NumPy exact core vs. JAX
+
+`hifi_anova(..., backend=...)` selects the linear-algebra core. The **same
+fit-path code** runs on either backend (a proxy resolves array ops to
+NumPy/SciPy or `jax.numpy`), so results agree to machine precision on float64
+(homoscedastic fits are byte-comparable; Stage-D agrees to ~1e-11, including the
+guard decisions).
+
+- `backend="auto"` (**default**) — runs the **NumPy exact core** (float64) when
+  the configuration stays inside the supported surface, and routes to JAX only
+  when a JAX-native path is requested (see below).
+- `backend="numpy"` — the float64 exact core. It removes the per-shape JAX
+  recompile, which is why the interactive console re-fits in ~0.1 s on it. It is
+  **float64-only** and **raises** (rather than silently changing the model) on
+  `precision="float32"`, the NN residual (`residual_nn` / residual type `'nn'`),
+  and the stage-laddering `mode='auto'/'full'`.
+- `backend="jax"` — the JAX path; required for the float32 speed mode and the
+  JAX-native residual/modes above.
+
+The linear residual families (Stage C `'rbf'`/`'rff'`/`'nystrom'` and Stage-D
+`variance_residual`) run on **either** backend. One caveat: **RFF** random
+frequencies are drawn backend-natively, so an RFF fit is deterministic per
+backend but **not numerically comparable across backends**; RBF and Nyström
+(seeded k-means) are cross-backend reproducible. A plain `hifi_anova(X, y)` now
+fits in float64 via the core; pass `backend="jax"` (with `precision="float32"`
+if desired) to reproduce the earlier JAX/float32 behavior.
 
 Top-level convenience imports:
 
@@ -129,7 +192,7 @@ from hifi_anova import (
     hifi_anova,             # one-call API
     HiFiResult,             # its result object
     HiFiANOVATrainer,       # staged trainer
-    estimate_sobol,         # unbiased Sobol-estimation mode
+    estimate_sobol,         # experimental additivity-calibrated mode
     compute_sobol_indices,  # Sobol from a fitted model
 )
 ```
@@ -168,7 +231,7 @@ hifi_anova(
     feature_names=None,          # list[str] or None -> ['x1', 'x2', ...]
     K1=5,                        # max harmonic/degree/scale, first order
     K2=3,                        # max harmonic/degree/scale, second order
-    strategy='variance',         # regularization strategy
+    strategy=None,               # None -> 'curvature' if heteroscedastic else 'variance'
     mode='second',               # 'first' | 'second' | 'full' | 'heteroscedastic' | 'auto'
     variable_selection='bic',    # 'bic' | 'group_lasso' | '1se' | None
     residual=None,               # 'rbf' | 'rff' | 'nystrom' | None
@@ -185,7 +248,10 @@ Notes on the one-call defaults:
   via `**kwargs`.
 - When `variable_selection` is set, `pair_candidates` defaults to `'either'`.
 - When `heteroscedastic=True`, it adds `Kh=3`, `lambda_h=0.1`, and stages
-  `['A','B','D']` (or `['A','B','C','D']` if a `residual` is also requested).
+  `['A','B','D']` (or `['A','B','C','D']` if a `residual` is also requested), and
+  resolves `strategy` to `'curvature'` (kept `'variance'` otherwise). Stage D is
+  guarded: it reverts to a constant variance (with a warning) unless the
+  heteroscedastic model beats it on held-out likelihood — see [§4.8](#48-variance-model--alternating-optimization-stage-d).
 - When `residual` is set, sensible per-type sub-config defaults are filled in
   (see [§8](#8-residual-models)).
 - `mode='auto'` reads `auto_threshold` (default `0.01`) from `**kwargs`.
@@ -281,8 +347,8 @@ scale up with the (larger) parameter count of higher-order blocks. The
 
 | Key | Type | Default | Effect |
 |-----|------|---------|--------|
-| `mode` | str | — | `'first'`, `'second'`, `'full'`, `'heteroscedastic'`, or `'auto'`. Resolved into `stages` by `resolve_mode`. |
-| `stages` | list[str] | `['A','B','C','D']` | Explicit stage list, used if `mode` is absent. |
+| `mode` | str | `'second'` | `'first'`, `'second'`, `'full'`, `'heteroscedastic'`, or `'auto'`. Resolved into `stages` by `resolve_mode`. |
+| `stages` | list[str] | `['A','B']` | Explicit stage list; overrides `mode`. **The default is mean-only** (A, B) — the nonlinear residual (C) and the variance model (D) are opt-in, never fitted by accident. Request them via `mode` or an explicit `stages`. |
 | `auto_threshold` | float | `0.01` | In `mode='auto'`, minimum residual fraction (`1 − R²_val`) to add the next stage. |
 
 See [§5](#5-complexity-modes--stages) for the stage semantics.
@@ -332,11 +398,12 @@ yet a plain ridge fit still assigns `x₃` a small, noisy first-order component
 it, and `variable_selection` does not touch first-order blocks — it only gates
 pair candidates.
 
-`first_order_pruning` closes this gap. Post-fit, it runs a leave-one-group-out
-group test on the first-order blocks and **zeros the entire block** of any
-variable whose marginal effect is not supported by the data. Because first-order
-and pair/triple blocks are Hoeffding-orthogonal, removing a rejected block does
-not disturb the interactions.
+`first_order_pruning` closes this gap. Post-fit, it applies the selected
+leave-one-group-out model-selection heuristic to the first-order blocks and
+**zeros the entire block** of any variable the heuristic drops. This is not a
+calibrated significance or Theorem-2 test. Because first-order and pair/triple
+blocks are Hoeffding-orthogonal, removing a dropped block does not disturb the
+interactions.
 
 ```python
 config = {
@@ -389,8 +456,124 @@ the linear-residual classes themselves default to `n_centers=300`,
 |-----|------|---------|--------|
 | `variance_residual` | dict or None | `None` | RBF/RFF residual for higher-order variance structure. Sub-keys `type` (`'rbf'`), `sigma` (`0.3`), `n_centers` (`150`). |
 | `max_outer_iter` | int | `10` | Alternating (mean ↔ variance) outer iterations. |
-| `alternating_tol` | float | `1e-4` | Relative NLL tolerance for early stopping. |
+| `alternating_tol` | float | `1e-4` | Relative NLL tolerance for stopping the loop. |
 | `newton_max_iter` | int | `10` | Inner Newton iterations for the log-variance fit. |
+| `leverage_correction` | bool | `True` | Feed the variance solve leverage-corrected squared residuals `r²/(1−lev)` — raw in-sample `r²` is biased low where the mean fits tightly (`E[r²] ≈ σ²(1−lev)`), which is what destabilized the loop on rich bases — and estimate the constant-variance baseline the same way. `False` restores the raw pre-DEC-028 solve. |
+| `alternating_early_stop` | bool | `True` | Score every outer iterate on held-out NLL and keep the best one, instead of trusting the train-NLL convergence point (the first iterate — one-step feasible GLS — is often the best). `results['stage_D']` reports `val_nll_trajectory`, `best_outer_iteration`, `n_outer_iterations`. |
+| `heteroscedastic_guard` | bool | `True` | Master switch for the Stage-D safety net (box below). `False` forces the raw alternating fit and skips the checks (use when you know the data is heteroscedastic and want no overhead). |
+| `min_noise_ratio` | float | `1e-2` | Near-noiseless entry gate, as a scale-free noise-to-signal variance ratio (`residual_var / total_var = 1 − R²`). Below it Stage D is **skipped** with an explanatory warning: on essentially-noiseless data the residual is deterministic mean-approximation error, not aleatoric noise, and a held-out-NLL guard cannot tell the two apart. The `1e-2` default is calibrated (DEC-039, 48-fit sweep): essentially-noiseless fits sit at `1−R² ≤ 6e-4` while genuine heteroscedastic data — down to a weak `β=1` — sits at `1−R² ≥ 0.095`, a ~160× gap (σ²-shape does **not** separate them). Per-fit overridable: **lower it** to keep Stage D for genuinely heteroscedastic high-SNR data (SNR 100–1000). |
+| `variance_selection_margin` | float | `2e-3` | Minimum *relative* held-out-NLL improvement for the heteroscedastic model to be kept over constant variance. Larger ⇒ more conservative (prefers homoscedastic). |
+| `stage_d_joint_gls_mean` | bool | `True` | Solve the Stage-D weighted mean as the **penalized-GLS optimum** — weighted-center both `y` and Φ so the intercept is profiled jointly (DEC-039). Restores monotone alternating descent and an efficient weighted mean. `False` is the legacy fixed-intercept / uncentered-Φ solve (a compatibility flag, slated for removal; see below). |
+| `variance_selection_mean_consistent` | bool | `True` | Compare σ²(x) vs constant variance under the **same** (weighted) mean, so the keep/revert decision isolates the variance (DEC-039). `False` is the pre-flip package comparison. |
+| `variance_selection_mean_fallback` | bool | `False` | Opt-in outcome: keep the variance model but ship the unit-weight mean if the weighted mean degrades the package. Under the joint-GLS default this should never be needed, so it doubles as an **invariant monitor** — a firing sets `results['stage_D']['mean_fallback_anomaly']`. |
+
+> **Stage D stability.** The alternating loop reweights the mean fit by
+> `1/σ²(x)`, so a poorly-posed variance model could destabilize the mean. Since
+> DEC-028 the loop is **stabilized at the source** — the variance solve sees
+> leverage-corrected residuals (`leverage_correction`) and the best outer
+> iterate is selected on held-out NLL (`alternating_early_stop`) — and the
+> DEC-027 safety net remains as a backstop, all on by default and overridable:
+>
+> - **Leverage correction + trajectory selection (the fix).** Raw in-sample
+>   residuals under-report σ² exactly where a rich mean basis fits tightly;
+>   feeding them to the variance solve created a feedback (weights blow up →
+>   mean interpolates the low-σ region → residuals shrink further) that could
+>   degrade the mean, especially under `strategy='variance'`. With the
+>   correction on, both `'variance'` and `'curvature'` are stable; the one-call
+>   API still defaults to `'curvature'` when `heteroscedastic=True`.
+> - **Model selection against constant variance (the main catch).** Stage D
+>   *always* compares the fitted heteroscedastic model against a **homoscedastic
+>   (constant-variance) baseline** on **held-out** NLL, and keeps the variance
+>   model only if it improves the held-out likelihood by `variance_selection_
+>   margin`. The baseline σ̂² is leverage-corrected too (an effective-df
+>   correction), so the comparison is fair on both sides. Constant variance is
+>   the default *outcome*: the data must earn the input-dependent variance.
+ - **Degeneracy guards.** A fit that diverges (`nan`) or inflates the mean RMSE
+>   >2× reverts to the mean-only fit, each with a warning naming the cause and the
+>   fix. A separate near-noiseless **entry gate** (`min_noise_ratio`, default
+>   `1e-2`) skips Stage D before fitting when `1−R²` is below the gate — the
+>   residual is deterministic mean-approximation error rather than aleatoric
+>   noise, which the held-out-NLL guard cannot distinguish. It is per-fit
+>   overridable for genuinely heteroscedastic high-SNR data.
+>
+> - **Joint-GLS weighted mean (DEC-039, the root fix; `stage_d_joint_gls_mean`).**
+>   The alternating mean update solves the *penalized-GLS optimum* — it
+>   weighted-centers both `y` and Φ and profiles the intercept jointly — rather
+>   than fixing `f0 = Σwₙyₙ/Σwₙ` and solving on uncentered Φ. Fourier features
+>   have ~0 unweighted mean but a nonzero *weighted* mean under `1/σ²(x)` weights,
+>   so the legacy uncentered solve was not the GLS optimum and yielded a weighted
+>   mean that could lose to the unit-weight mean on its own objective — dragging a
+>   correct variance model into a false revert. With the fix the guard keeps
+>   genuinely heteroscedastic variance models, and the keep/revert comparison uses
+>   the *same* weighted mean on both sides (`variance_selection_mean_consistent`).
+>   The effective estimator vintage is recorded for provenance as
+>   `results['stage_D']['mean_intercept_mode']` (and on the fitted-design record /
+>   saved metadata): `profiled_joint_gls` for the default, or
+>   `legacy_fixed_intercept_uncentered_features` under the compatibility flag.
+>   The two compatibility flags (`stage_d_joint_gls_mean`,
+>   `variance_selection_mean_consistent`) are transitional — they will eventually
+>   become permanent behavior and cease to exist as knobs.
+>
+> **Variance is opt-in**: the default fit (`mode='second'`) models only the mean
+> — request Stage D via `heteroscedastic=True`, `mode='heteroscedastic'`, or
+> `mode='auto'`.
+
+### 4.9 User-defined equation systems (term structure)
+
+By default `K1`/`K2`/`K3` request a *uniform* decomposition — every variable
+enters at every requested order — and the selection/pruning heuristics of
+[§4.6](#46-selection--pruning) decide which terms survive. When you instead
+want to **pin an exact term structure yourself** — a specific set of pairs, a
+per-pair harmonic order, an order-selective membership, or a variance model over
+a named subset — the keys below express it directly. All of them are **additive
+and inert by default** (every code path keys on a `None` default), so a fit that
+uses none of them is byte-identical to before.
+
+These keys **assert** a structure rather than discover one; they are the honest
+alternative to a data-driven selector for the cases the selectors do not yet
+cover (`Session/DECISIONS.md` DEC-053/DEC-054). Two honesty labels recur below
+and are carried into `results['term_structure']` and `summary()`:
+
+- **non-hierarchical** — a model with a pair term `(i, j)` but *no* first-order
+  block for `i` (or `j`) violates the usual strong-heredity convention. This is
+  a legitimate modeling choice, but it is *your* assertion, and the output says
+  so rather than hiding it.
+- **homoscedasticity-asserted** — a variable excluded from the variance model is
+  taken to have flat `σ²(x)` (`Sʰ ≡ 0`) *by assumption*, not because the data
+  showed it. The keys still span all `D`, reporting an exact zero.
+
+| Key | Type | Default | Effect |
+|-----|------|---------|--------|
+| `K2` (mapping form) | `{(i, j): K2_ij}` | — | A **mapping** pins the exact retained pairs *and* gives each its own second-order order (per-pair Grams, ragged blocks end-to-end through features → penalties → model → Sobol/CI → Stage D → persistence). Pair keys must be canonical (`i < j`). Rejects data-driven pair selection/pruning, `K3 > 0`, mixed bases, and `mode='auto'` — a pinned structure and a discovery heuristic are mutually exclusive. |
+| `variable_orders` | `{j: [orders]}`, orders ⊆ `{1, 2}` | `None` | Order-selective membership for variable `j`. `[1, 2]` is the default (both). `[2]` admits `j` to **pair terms only** — its first-order block is excluded from the design (no df spent; the model keeps the uniform first-order layout with exact zeros for prediction/Sobol slicing). **This is non-hierarchical** — a pair without its marginal — and is flagged as such. `[1]` drops every pair *touching* `j`, keeping its first-order term. |
+| `variance_variables` | `list[int]` | `None` (all `D`) | Restrict the first-order variance model (Stage D) to a named subset. Excluded variables are **variance-flat** with `Sʰ ≡ 0` **by assertion** (homoscedasticity-asserted); df is spent only on the subset, and `get_coefficients_for_variable` returns zeros for the rest. Composes with `K2h` (variance pairs are kept only inside the subset; an explicit variance pair reaching outside it is rejected) and `var_pair_selection='auto'`. |
+| `K2h` | int | `0` | Documented public API: `> 0` fits second-order **variance** interactions, populating `log_variance_sobol['second_order']`. |
+| `var_pair_selection` (explicit form) | `list[(i, j)]` | `None` | An explicit list pins the exact variance pairs (previously a list silently behaved as `'all'`). `None`/`'all'` keep all pairs; `'auto'` runs a quick variance fit then selects. |
+
+```python
+from hifi_anova.api import hifi_anova
+
+# Per-pair second-order orders: keep only (0,1) and (2,3), at orders 4 and 2.
+res = hifi_anova(X, y, K1=6, K2={(0, 1): 4, (2, 3): 2})
+
+# Order-selective membership: x2 enters pairs only (no first-order block).
+# NON-HIERARCHICAL — asserted; res.train_results['term_structure'] flags it.
+res = hifi_anova(X, y, K1=6, K2=4, variable_orders={2: [2]})
+
+# Variance model over a named subset; the rest are σ²(x)-flat BY ASSERTION.
+res = hifi_anova(X, y, K1=6, heteroscedastic=True, mode='heteroscedastic',
+                 variance_variables=[0, 2], K2h=2)
+```
+
+`summary()` surfaces the equation system (per-pair orders, any first-order
+exclusions and their non-hierarchical caveat, the variance subset), and
+`results['term_structure']` records the same machine-readably; the ragged pair
+layout is mirrored into `meta.json` on `save_model` (the model itself
+round-trips exactly via its pickle companion). Two capabilities remain
+**expert-gated** and are *not* exposed here: a data-driven pair/order selector
+(BR-02/BR-03) and a data-driven variance-variable selector — both would need a
+calibrated criterion before shipping, which is exactly the honesty line these
+asserted keys hold.
 
 ---
 
@@ -537,8 +720,44 @@ config = {
 # variables not listed fall back to basis_name / K1
 ```
 
-`basis_per_variable='auto'` runs cross-residual characterization first and picks
-a basis per variable automatically.
+`basis_per_variable='auto'` runs a Legendre-first cross-residual characterization
+and produces a **heuristic** basis recommendation for each variable. It is not a
+joint or globally optimal basis-selection procedure. A compound
+`'legendre+haar'` recommendation currently resolves to its leading Legendre
+family on the mixed trainer, so pass an explicit mapping when the exact family
+assignment matters.
+
+#### Mixed-basis capability matrix
+
+The mixed per-variable path is deliberately narrower than the uniform path. It
+fits **Stage A** (all first-order blocks) and, with Stage B, **all variable
+pairs** — plus explicit/auto per-variable basis specs and block-correct Sobol
+point estimates and CIs. Everything else **raises** rather than silently doing
+something different from what you asked (DEC-045):
+
+| Control | Neutral value | Mixed support |
+|---|---|---|
+| Stage A / A+B (all pairs) | — | ✅ supported |
+| `basis_per_variable` (explicit / `'auto'`) | — | ✅ supported |
+| `variable_selection` | `None` | ❌ raises (implicit `'bic'` default is neutralized with a one-release warning) |
+| `pair_candidates` | `None` | ❌ raises |
+| `pair_selection` | `None` | ❌ raises |
+| `max_pair_variables` | `None` | ❌ raises |
+| `pair_pruning` | `'none'` | ❌ raises |
+| `first_order_pruning` | `'none'` | ❌ raises |
+| Stage C / residual, Stage D / heteroscedastic, `K3>0` | — | ❌ raises |
+
+`K2=0` disables pair interactions on the mixed path (a first-order / additive
+model — the `P_1` estimand), exactly as on the uniform path: no pair features,
+indices, result block, or CIs are produced. Use a **uniform** basis
+(`basis_name=...`) to run selection, pruning, residuals, variance, or triples.
+`result.train_results['mixed_capability']` records the stages that ran, the pair
+behavior, and whether selection/pruning was applied.
+
+This fixed mixed path remains useful for domain-informed assignments and
+small-to-moderate variable sets where retaining all pairs is acceptable. General
+mixed-basis variable selection and pruning are deferred follow-up work; the
+uniform-basis path provides those controls today.
 
 ### Effect signatures (characterization)
 
@@ -632,42 +851,114 @@ uncertainty.
 ```python
 sobol = compute_sobol_indices(model, data['x_test'])
 
-sobol['mean_sobol']['first_order']    # {i: S_i}
+sobol['mean_sobol']['first_order']    # {i: S_i}          — TOTAL shares (see below)
 sobol['mean_sobol']['second_order']   # {(i, j): S_ij}
 sobol['mean_sobol']['third_order']    # {(i, j, k): S_ijk}
 sobol['mean_sobol']['total_order']    # {i: total-order index for i}
-sobol['mean_sobol']['residual']       # fraction attributed to the residual
+sobol['mean_sobol']['residual']       # fraction attributed to the residual (= 1 − 𝔉)
 
 sobol['variance_accounting']          # absolute variances per order + totals
 ```
 
+**Core vs. total shares and structural fidelity 𝔉.** When a residual/NN stage runs,
+two normalizations coexist and are reported *separately, always labeled* (v06 §3.2/§8):
+
+```python
+sobol['mean_sobol_core']['first_order']   # Ŝ^core = V_u / V_core  (within retained orders)
+sobol['mean_sobol_total']['first_order']  # Ŝ^total = V_u / V_f    (of the whole function)
+sobol['fidelity']['value']                # 𝔉 = V_core / (V_core + Var(ĝ))
+sobol['fidelity']['orthogonality_defect'] # 2·Ĉov(f̂_core, ĝ) / Var(f̂)
+```
+
+- **`core`** divides by the retained structured orders only — the *within-model*
+  attribution, invariant when a residual is attached.
+- **`total`** divides by the whole function's variance — reduced by the fraction of
+  signal the residual carries. The two are bridged by the **structural fidelity**
+  `𝔉 = V_core/(V_core+Var(ĝ))`, with `Ŝ^total = 𝔉·Ŝ^core`. `1 − 𝔉` is the honest size
+  of the interpretability gap.
+- **`orthogonality_defect`** reports `2·Ĉov(f̂_core,ĝ)/Var(f̂)`: the `𝔉` identity is
+  exact only when core and residual are orthogonal; the defect measures how far an
+  *empirically* orthogonal residual departs from that (it is **not** folded into 𝔉).
+- With **no residual stage** (the common case) `𝔉 ≡ 1`, `total ≡ core`, the defect is
+  `0`, and the legacy `mean_sobol` fractions are unchanged (they equal the total).
+
+> **Naming (DEC-034).** The `𝔉`-scaled quantity `Ŝ^total = V_u/V_f` is a *share of the
+> **fitted** variance* — **not** the total-**effect** index `S_T` (first-order + all
+> interactions involving a variable), which is `sobol['mean_sobol']['total_order']`.
+> These are different objects; the printed summary calls the `𝔉`-scaled one the
+> **"share of fitted variance"** so it names its own denominator. `𝔉` itself is
+> *model-internal* ("internal R² of the core against the full fit") — distinct from the
+> data-vs-fit `R²` and from the population estimand `ρ_k` it estimates.
+
+On the one-call `HiFiResult`, the headline `result.sobol_ci` is the **core**
+interpretable CI (invariant to the residual model); `result.sobol_ci_total` adds the
+share-of-fitted-variance CIs (`= 𝔉·core`, conditional on the residual variance) — `None`
+when no residual ran — and `result.fidelity` carries the `𝔉` object above.
+`result.summary(headline="fitted_variance")` leads the shares table with the
+fitted-variance column instead of core (presentation only; both are always shown, and a
+residual row surfaces `1 − 𝔉`).
+
+**Opt-in — share of observed output variance.** `result.summary(observed=True)` also
+prints `result.sobol_ci_observed = V_u/Var(Y)` — a practitioner view that scales the
+fitted-variance shares by `Var(f̂)/Var(Y)` (treated as fixed). It *deliberately confounds
+attribution with fit quality*, so it is off by default, never co-tabulated with the
+canonical shares, and its residual+noise tail is reported as a single lump (components +
+lump `≈ 1`). Note `Var(f̂)/Var(Y)` equals `R²` only under OLS-with-intercept
+orthogonality — for a regularized/nonlinear fit it differs (and can exceed 1), so the
+library computes the scaling rather than advising "multiply by `R²`".
+
 When the model is heteroscedastic, a parallel block appears:
 
 ```python
-sobol['variance_sobol']['first_order']         # {i: variance-Sobol S^h_i}
-sobol['variance_sobol']['second_order']        # {(i, j): ...}
-sobol['variance_sobol']['total_order']         # {i: ...}
-sobol['variance_sobol']['variance_accounting'] # per-order variance totals
+sobol['log_variance_sobol']['first_order']         # {i: log-variance S^h_i}
+sobol['log_variance_sobol']['second_order']        # {(i, j): ...}
+sobol['log_variance_sobol']['total_order']         # {i: ...}
+sobol['log_variance_sobol']['variance_accounting'] # per-order h-variance totals
 ```
 
-`first_order[i]` drives `E[y|x]`; `variance_sobol['first_order'][i]` drives
-`Var[y|x]`.
+`first_order[i]` drives `E[y|x]`; `log_variance_sobol['first_order'][i]` is the
+log-variance index `S^h_i`, a driver of multiplicative fitted residual scale.
+`variance_sobol` remains a one-release deprecated read alias returning the exact
+same block. It is not natural-scale variance attribution.
 
 **Visualizing the dual spectrum.** `hifi_anova.analysis.visualization` provides
-`plot_dual_sobol` (paired mean/variance bars) and `plot_sensitivity_ellipses` —
+`plot_dual_sobol` (paired mean/log-variance bars) and
+`plot_sensitivity_ellipses` —
 a dual-sensitivity view where each variable is an ellipse whose *width* is its
-mean sensitivity and *height* its variance sensitivity (`mode='glyph'`), or a
+mean sensitivity and *height* its log-variance index (`mode='glyph'`), or a
 scatter at `(Sᶠ, Sʰ)` with CI ellipses (`mode='plane'`). A publication-styled
 `plot_sensitivity_ellipses` returning `(fig, ax)` is also in
 `hifi_anova.analysis.plots`.
 
 **Structural vs. correlative indices.** The indices above are **structural**
-(`wᵀ G w`, assuming independent inputs); they sum to 1. When `x_data` is passed,
-`compute_sobol_indices` also returns `sobol['correlative_sobol']`, computed from
-the empirical covariance of component outputs. Correlative indices account for
-input correlations and **need not sum to 1**; the gap between them and the
-structural indices, plus `correlation_level` (`'clean'`/`'mild'`/`'strong'`),
-diagnoses how much correlation is distorting the attribution.
+(`wᵀ G w`, reference product measure, assuming independent inputs); they sum to 1.
+When `x_data` is passed, `compute_sobol_indices` also returns
+`sobol['correlative_sobol']`, the joint-law allocation
+`S^corr_u = Cov(f̂_u, f̂_tot)/Var(f̂_tot)` over **all** retained structured
+components (`first_order`, `second_order`, `third_order`; the orthogonal residual
+is excluded — it is carried by the structural fidelity 𝔉). The complete
+collection sums to 1 **identically** (`sum_of_correlative_indices`, by linearity
+of covariance, regardless of dependence); individual shares may be negative or
+exceed 1, and a first-order-only subset (`first_order_sum`) need **not** sum to 1
+when interactions are retained.
+
+**This block is a diagnostic, not an official estimand**
+(`role = 'independence_assumption_diagnostic'`,
+`official_correlated_estimand = False`). The reported attribution is the
+*structural* spectrum, which describes the fitted function under the reference
+**independent product measure**; independence is an assumption
+(`sobol['input_assumption_verified']` is `False` unless you pass
+`inputs_independent_by_design=True` for a controlled experiment). By default
+`correlation_diagnostic(model, x)` is **descriptive**: it reports the
+structural-vs-correlative divergence and the max ordinary Pearson correlation
+(`max_abs_input_correlation`, descriptive only — *not* proof of independence and
+blind to nonlinear dependence). An **experimental, opt-in** nonlinear independence
+test (unbiased distance correlation + max-statistic permutation) runs only with
+`run_independence_test=True` (or via `independence_test(x)`), adding
+`dependence_level` and `nonlinear_significant`; it is off the core path. For
+observational data independence must be justified externally, and principled
+dependent-input attribution (Shapley effects / generalized hierarchically-
+orthogonal ANOVA) is out of scope — see the manuscript outlook.
 
 ### 9.2 Heteroscedastic fit — worked example
 
@@ -686,22 +977,22 @@ model, results = HiFiANOVATrainer(config).fit(
 
 sobol = compute_sobol_indices(model, data['x_test'])
 print(sobol['mean_sobol']['first_order'])       # mean drivers
-print(sobol['variance_sobol']['first_order'])   # variance drivers (var 2 dominates)
+print(sobol['log_variance_sobol']['first_order'])  # log-scale driver S^h
 ```
 
-### 9.3 Sobol-estimation mode (unbiased recovery)
+### 9.3 Sobol-estimation mode (additivity-calibrated, experimental)
 
 Sobol indices are quadratic in the coefficients, so GCV-optimal ridge biases them
-slightly downward. `estimate_sobol` is a *separate* mode aimed at unbiased
-recovery rather than prediction: with `auto_lambda=True` it finds the `λ` that
-makes the indices sum to ~1 (the additivity criterion).
+slightly downward. `estimate_sobol` is a separate experimental mode that tunes
+`lambda` so the fitted indices approach a requested additivity sum. That
+calibration is heuristic; it is not a proof or guarantee of unbiased recovery.
 
 ```python
 from hifi_anova.training.trainer import estimate_sobol
 
 est = estimate_sobol(data['x_train'], data['y_train'],
                      K1=10, K2=5, strategy='curvature', auto_lambda=True)
-print(est['additivity_sum'])         # ~1.0 when unbiased
+print(est['additivity_sum'])         # ~1.0 at the requested calibration target
 print(est['sobol_first_order'])      # {i: S_i}
 print(est['sobol_total_order'])      # {i: total-order}
 print(est['lambda_order1'])          # the λ found
@@ -717,7 +1008,8 @@ variances, `additivity_sum`, the `lambda_order*` used, and the coefficients.
 ### 9.4 Confidence intervals
 
 `hifi_anova.analysis.automl.sobol_confidence_intervals` puts
-heteroscedasticity-robust CIs on the indices via a **sandwich estimator** (HC0)
+heteroscedasticity-robust CIs on the indices via a leverage-corrected
+**HC3 sandwich estimator**
 for `Cov(w)` combined with the **delta method** for `S = wᵀGw / total`:
 
 ```python
@@ -743,12 +1035,108 @@ shortcut undercovers, and the coverage-validation results — is in
 The one-call API computes first-order (and available second-order) CIs for you
 and exposes them as `result.sobol_ci`.
 
+These are fixed-configuration intervals. They condition on the transform, basis,
+admitted structure, penalties, and weights; when selection used the same data,
+`result.inference_metadata` records that fact and post-selection coverage is not
+claimed. Degenerate null and complete-share components are marked in
+`result.sobol_ci_status` and suppressed from ordinary interval presentation.
+
+### 9.5 Fitted-design diagnostics & the two-fit convention
+
+All one-call diagnostics (`sigma_hat`, `df`, `loo_cv`, the Sobol CIs, and the
+epistemic term of `predict_intervals`) are computed from the **design the trainer
+actually solved** — a `FittedDesign` record surfaced on
+`result.train_results['fitted_design']` — not a separate rebuild. This makes the
+reported numbers describe the model you get back, with the real per-order
+penalties and the third-order variance in the Sobol denominator.
+
+For a **heteroscedastic (Stage-D)** fit this follows the theory's *two-fit
+convention* (manuscript Theorem `projection` Part ii):
+
+`result.sobol` is the structural spectrum of the shipped predictive fit (the
+precision-weighted mean when Stage D is kept). `result.sobol_ci` is instead the
+unit-weight interpretable headline attribution and its fixed-configuration
+intervals. They coincide without heteroscedastic weighting but can differ under
+Stage D; `result.sobol_ci_efficient` and `result.sobol_gap` expose that difference.
+
+- **Prediction & diagnostics** use the precision-weighted (GLS) fit with
+  `W = diag(1/σ²(xₙ))`: `df = tr S`, weighted PRESS/LOO, a weighted epistemic
+  posterior `A_w = ΦᵀWΦ + R`, and `sigma_hat` reinterpreted as the **whitened
+  calibration scale** `√(RSS_w/df_res)` — it is ≈ 1 when the variance model is
+  calibrated, **not** a homoscedastic noise level. `result.noise_scale_is_calibration`
+  is `True` in this case, and the input-dependent noise is available as
+  `result.sigma_x2(X_new)` (returns `σ²(x)`).
+- **Attribution** (the Sobol point indices and their HC3 CIs, in `result.sobol_ci`)
+  uses the *unit-weight* (`W = I`) companion, so a reported component is a Hoeffding
+  projection (an estimand), not a heteroscedasticity artifact. The HC3 sandwich is
+  already heteroscedasticity-robust, so the attribution CIs are **not** reweighted.
+  This is the **interpretable** fit and stays the headline attribution.
+
+For a heteroscedastic fit the two fits differ, and the manuscript prescribes
+reporting *both* plus their observed gap:
+
+- `result.sobol_ci_efficient` — the **efficient** (precision-weighted) first-order
+  Sobol CIs, computed on the same retained blocks with the weighted sandwich. This
+  is the fit used for prediction; it converges to a *different* target than the
+  interpretable fit under heteroscedasticity.
+- `result.sobol_gap` — the observed **efficient − interpretable** gap per component
+  (`{'first_order': {name: gap}, 'second_order': {(i, j): gap}}`), the
+  "heteroscedasticity × misspecification" diagnostic (Theorem `projection` Part ii).
+  `summary()` prints a gap row when it is non-negligible. A large gap flags that
+  weighting and the unexplained residual are jointly steering attribution.
+
+Mixed **per-variable bases** (`basis_per_variable=`) are supported by the one-call
+API: the record carries each variable's (and pair's) own block layout and Gram, and
+the Sobol CIs are computed block-driven — so `hifi_anova(..., basis_per_variable=…)`
+returns block-correct CIs instead of raising.
+
+On the homoscedastic path the two fits coincide: `sobol_ci_efficient` and
+`sobol_gap` are `None` (no gap row), `noise_scale_is_calibration` is `False`,
+`sigma_hat` is the usual noise estimate, and `sigma_x2` returns the neutral unit
+variance (use `sigma_hat**2` as the constant noise level there).
+
+### 9.6 Leave-one-out tiers (heteroscedastic fits)
+
+For a **heteroscedastic** fit the variance model is estimated from all the data,
+so the plug-in weighted PRESS is only *Tier I* of a three-tier leave-one-out
+hierarchy (theory manuscript, App. C). The one-call reports the manuscript's
+default **Tier II** — a one-step Newton jackknife that also corrects the *variance*
+prediction on deletion — and adds a predictive **LOO-NLL** on a common scale:
+
+```python
+result.loo_cv     # squared-error LOO (Tier-II-weighted on a Stage-D fit)
+result.loo_nll    # predictive leave-one-out NLL — populated on BOTH paths
+result.loo_tier   # 1 (homoscedastic; tiers coincide) or 2 (Stage-D default)
+
+result.loo(tier=1)  # plug-in (variance held at full-data values; old tables)
+result.loo(tier=2)  # the reported one-step jackknife
+result.loo(tier=3)  # exact nested refit — the oracle; O(N) joint refits (slow)
+```
+
+Prefer **`loo_nll`** for comparing models: the weighted `loo_cv` is measured in a
+*model-dependent* metric (the weights come from that model's variance fit), so it
+is not comparable across models; the LOO-NLL is. On the homoscedastic path the
+three tiers coincide, `loo_tier` is 1, and `loo_nll` reduces to the free form
+`½·log σ̂² + loo_cv/(2σ̂²) + ½·log 2π`.
+
+Tier II's `O_p(N⁻²)` guarantee is *conditional*: it does not hold at an active
+variance floor or with an ill-conditioned variance Hessian. The fit checks both
+(a KKT floor test — not a bare value-at-clip check — plus an `H_h` conditioning
+check) and exposes `result.loo_tier2_guarantee_holds`
+(`/loo_variance_floor_active` / `variance_hessian_ill_conditioned`); when the
+guarantee is at risk, `summary()` prints a warning and **Tier III**
+(`result.loo(tier=3)`) is authoritative. This is a *predictive* diagnostic — for
+selecting `λ_h` use the K-fold / LAML criteria (`training/joint_lambda.py`), not
+this single leave-one-out sweep.
+
 ---
 
 ## 10. Diagnostic suite
 
-Because the fit is a single ridge solve, an entire diagnostic pipeline comes at
-negligible extra cost — everything below derives from the one hat matrix.
+At a fixed design, retained block set, penalty, and weight vector, the diagnostic
+pipeline comes at modest extra cost: the quantities below reuse the finalized
+ridge system and its hat matrix. Configuration search and Stage-D alternation are
+separate and may require additional factorizations.
 
 ### 10.1 One-solve analytics — LOO, noise, GCV
 
@@ -839,7 +1227,8 @@ residual. `iterative_pair_discovery` implements fit → scan → add → refit.
 
 Prediction intervals combine aleatoric variance (from the variance model) with
 Fourier epistemic variance (`hifi_anova.model.predict.predict_intervals`), and
-`sobol['variance_accounting']` / `sobol['variance_sobol']['variance_accounting']`
+`sobol['variance_accounting']` /
+`sobol['log_variance_sobol']['variance_accounting']`
 give the absolute variance booked to each order for auditing how much of the
 signal the model actually explains.
 
@@ -895,6 +1284,13 @@ x_grid, f_values = result.component_curve('MedInc', n_points=200)  # name or ind
 # Human-readable summary (ranked Sobol w/ CIs, R², noise, df, top interactions)
 result.summary()
 
+# Train/val/test split provenance — original-dataset row indices per split, in
+# the fitted design's row order. X[idx['train']] / y[idx['train']] are exactly
+# the rows the model was fit on, so a per-point diagnostic (LOO residual,
+# leverage, worst out-of-sample row) maps back to a dataset row id.
+idx = result.split_indices          # {'train': ndarray, 'val': ..., 'test': ...}
+X_train, y_train = X[idx['train']], y[idx['train']]
+
 # Persist model + transformer + config + feature names + results
 result.save('my_model/')
 ```
@@ -927,12 +1323,23 @@ y_hat = np.asarray(model.predict_mean_only(jnp.asarray(X_t, dtype=jnp.float32)))
 
 ## 12. Assumptions & caveats
 
-- **Independent inputs / product measure.** Analytic (structural) Sobol indices
-  assume a product input measure (uniform marginals after the quantile
-  transform) and sum to 1. Under correlated inputs the structural indices
-  misattribute; use the separate **correlative** indices
-  (`sobol['correlative_sobol']`, which do not sum to 1) as the honest fallback,
-  and watch `correlation_level`.
+- **Independent inputs / product measure (assumed, not verified).** Analytic
+  (structural) Sobol indices assume a product input measure (uniform marginals
+  after the quantile transform) and describe the fitted function under that
+  reference measure; they sum to 1. This is an *independence* assumption
+  (`sobol['input_assumption'] = 'independent_product_measure'`,
+  `input_assumption_verified = False` by default), not merely zero correlation —
+  uncorrelated-but-dependent inputs violate it too. For **controlled experiments**
+  pass `inputs_independent_by_design=True` to record it; for **observational
+  data** justify independence externally. `correlation_diagnostic` is descriptive
+  by default (structural-vs-correlative divergence + ordinary Pearson, *not* a
+  proof); an experimental nonlinear test is opt-in via `run_independence_test=True`
+  / `independence_test`. Read `sobol['correlative_sobol']` as an optional
+  assumption-sensitivity diagnostic (`official_correlated_estimand = False`), not
+  an estimand: the complete collection sums to 1; individual shares may be negative
+  or exceed 1; a first-order-only subset does not sum to 1 when interactions are
+  retained. Principled dependent-input attribution (Shapley / generalized ANOVA)
+  is out of scope.
 - **Quantile-space effects.** "Linear" / "low-frequency" is defined in quantile
   space — a monotone, nonlinear reparameterization of the original features. A
   linear effect in quantile space is not linear in the raw feature.
@@ -941,7 +1348,8 @@ y_hat = np.asarray(model.predict_mean_only(jnp.asarray(X_t, dtype=jnp.float32)))
   `sin(π x₁ x₂)`) are approximated, not captured exactly.
 - **Shrinkage bias.** Sobol indices are quadratic in the coefficients, so
   GCV-optimal ridge biases them slightly downward. Use the Sobol-estimation mode
-  (`estimate_sobol`, [§9.3](#9-sensitivity--uncertainty)) for unbiased recovery.
+  The experimental `estimate_sobol` mode ([§9.3](#9-sensitivity--uncertainty))
+  tunes additivity but does not guarantee unbiased recovery.
 - **Not primarily a top-tier predictor.** HiFi-ANOVA trades a little predictive
   accuracy for interpretability and analytic sensitivity analysis.
 - **Penalty strategy affects attributions.** Different smoothness-penalty

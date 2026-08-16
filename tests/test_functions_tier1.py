@@ -306,8 +306,8 @@ class TestT1_5_ConstantMeanVariableNoise:
 
     def test_variance_sobol_x1_dominates(self):
         """Variance Sobol should show x1 as the dominant driver."""
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing from results"
-        vs = self.sobol['variance_sobol']['first_order']
+        assert 'log_variance_sobol' in self.sobol
+        vs = self.sobol['log_variance_sobol']['first_order']
         # x1 should have the largest variance Sobol
         s1_h = vs[0]
         others = [vs[i] for i in range(1, 5)]

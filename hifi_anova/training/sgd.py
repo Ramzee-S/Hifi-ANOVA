@@ -14,8 +14,7 @@ import jax
 import jax.numpy as jnp
 import equinox as eqx
 import optax
-from typing import Tuple, Optional
-from functools import partial
+from typing import Optional
 
 
 def train_residual_nn(
@@ -275,7 +274,11 @@ def joint_finetune(
         projector = FourierProjector(build_batch_features(x_train, model), reg_diag)
 
     optimizer = optax.adam(lr)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    # Filter to floating-point parameters only: the model now carries integer
+    # index buffers (pair_indices/triple_indices) as dynamic leaves, and those must
+    # NOT be optimized. is_inexact_array selects the trainable float params
+    # (Fourier + NN + variance) and excludes the integer index buffers.
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
     @eqx.filter_jit
     def loss_fn_standard(model, x, y):
@@ -292,8 +295,9 @@ def joint_finetune(
         """Loss with NN output projected orthogonal to Fourier subspace."""
         phi1 = model.build_phi1(x)
         phi2 = model.build_phi2(x)
+        phi3 = model.build_phi3(x)
 
-        fourier_mean = model.mean_model.predict(phi1, phi2)
+        fourier_mean = model.mean_model.predict(phi1, phi2, phi3)
 
         # NN output, projected
         nn_raw = jax.vmap(model.residual_net)(x).squeeze(-1)
@@ -317,7 +321,7 @@ def joint_finetune(
     def step(model, opt_state, x, y):
         loss, grads = eqx.filter_value_and_grad(loss_fn)(model, x, y)
         updates, opt_state_new = optimizer.update(
-            grads, opt_state, eqx.filter(model, eqx.is_array)
+            grads, opt_state, eqx.filter(model, eqx.is_inexact_array)
         )
         model_new = eqx.apply_updates(model, updates)
         return model_new, opt_state_new, loss

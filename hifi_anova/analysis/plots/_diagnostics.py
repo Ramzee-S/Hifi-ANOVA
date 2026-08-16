@@ -124,10 +124,8 @@ def plot_residual_diagnostics(
     """
     apply_style()
     residuals = _ensure_np(analytics['residuals'])
-    leverages = _ensure_np(analytics['leverages'])
     sigma = np.sqrt(max(analytics['sigma2_hat'], 1e-15))
     std_res = residuals / sigma
-    w = analytics['w']
 
     fig, axes = plt.subplots(1, 3, figsize=figsize)
 
@@ -212,7 +210,7 @@ def plot_sieve_cascade(
     ]
 
     y_pos = np.arange(len(levels))
-    bars = ax.barh(y_pos, [v for _, v, _ in levels], height=0.65,
+    ax.barh(y_pos, [v for _, v, _ in levels], height=0.65,
                    color=[c for _, _, c in levels], edgecolor='white',
                    linewidth=1)
 
@@ -222,7 +220,7 @@ def plot_sieve_cascade(
             ax.text(val + 0.01, idx, f'{val:.1%}', va='center', fontsize=9)
 
     ax.set_yticks(y_pos)
-    ax.set_yticklabels([l for l, _, _ in levels])
+    ax.set_yticklabels([lbl for lbl, _, _ in levels])
     ax.set_xlabel('Fraction of residual variance')
     ax.set_title('(a) Residual decomposition by level', loc='left',
                  fontweight='bold')
@@ -268,13 +266,13 @@ def plot_sieve_cascade(
         for idx, (label, val, _) in enumerate(items):
             ax.text(val + 0.002, idx, f'{val:.1%}', va='center', fontsize=8)
         ax.set_yticks(y2)
-        ax.set_yticklabels([l for l, _, _ in items], fontsize=8)
+        ax.set_yticklabels([lbl for lbl, _, _ in items], fontsize=8)
         ax.invert_yaxis()
         ax.set_xlabel('Fraction of residual')
         ax.set_title('(b) Top missed interactions', loc='left',
                      fontweight='bold')
     else:
-        ax.text(0.5, 0.5, 'No significant\nmissed interactions',
+        ax.text(0.5, 0.5, 'No flagged\nmissed interactions',
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=12, color=PALETTE['muted'])
         ax.set_title('(b) Top missed interactions', loc='left',
@@ -342,7 +340,7 @@ def plot_sieve_peeling(
                 va='center', fontsize=9, fontweight='bold')
 
     ax.set_yticks(range(n))
-    ax.set_yticklabels([l for l, _, _ in layers], fontsize=9)
+    ax.set_yticklabels([lbl for lbl, _, _ in layers], fontsize=9)
     ax.invert_yaxis()
     ax.set_xlabel('Fraction of original residual variance remaining')
     ax.set_xlim(0, 1.15)

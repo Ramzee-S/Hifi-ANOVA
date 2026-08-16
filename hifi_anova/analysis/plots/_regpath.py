@@ -492,7 +492,7 @@ def plot_complexity_staircase(
     width = 0.35
     bars1 = ax1.bar(x_pos - width / 2, rmses, width, color=bar_colors,
                     alpha=0.8, edgecolor='0.3', linewidth=0.5, label='RMSE')
-    bars2 = ax1.bar(x_pos + width / 2, sigmas, width, color=bar_colors,
+    ax1.bar(x_pos + width / 2, sigmas, width, color=bar_colors,
                     alpha=0.4, edgecolor='0.3', linewidth=0.5, hatch='///',
                     label='$\\hat{\\sigma}$')
     if true_sigma is not None:

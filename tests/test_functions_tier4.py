@@ -183,22 +183,27 @@ class TestT4_3_TunableSNR:
         return model, results, sobol, gt, data
 
     def test_beta_zero_homoscedastic(self):
-        """At beta=0, variance Sobol should show no structure."""
+        """At beta=0 the data is homoscedastic, so the variance model must show
+        no structure. Two admissible correct outcomes: (a) the DEC-028 guard
+        reverts to a constant variance (no ``variance_sobol`` at all — the
+        cleanest "no structure" answer), or (b) a variance model is fitted but
+        no variable dominates its spectrum. Either is a pass; a dominated
+        variance spectrum is the only failure."""
         model, results, sobol, gt, data = self._fit_model(beta=0.0)
-        assert 'variance_sobol' in sobol, "variance_sobol missing from results"
-        vs = sobol['variance_sobol']['first_order']
-        # No variable should dominate
+        if 'log_variance_sobol' not in sobol:
+            # Guard reverted to constant variance — correct for homoscedastic data.
+            assert getattr(model, 'variance_model', None) is None
+            return
+        vs = sobol['log_variance_sobol']['first_order']
         max_v = max(vs.values())
-        # With beta=0 (homoscedastic), the variance model shouldn't find structure
-        # Allow some noise in the estimate
         assert max_v < 0.6, \
             f"At beta=0 (homoscedastic), no var should dominate: max={max_v:.4f}"
 
     def test_beta_two_strong_heteroscedasticity(self):
         """At beta=2, noise variable (x3) should dominate variance Sobol."""
         model, results, sobol, gt, data = self._fit_model(beta=2.0)
-        assert 'variance_sobol' in sobol, "variance_sobol missing from results"
-        vs = sobol['variance_sobol']['first_order']
+        assert 'log_variance_sobol' in sobol
+        vs = sobol['log_variance_sobol']['first_order']
         s3_h = vs[2]  # noise_variable=2 (x3)
         assert s3_h > 0.2, \
             f"At beta=2, x3 should dominate variance: S3_h={s3_h:.4f}"
@@ -208,10 +213,10 @@ class TestT4_3_TunableSNR:
         _, _, sobol_low, _, _ = self._fit_model(beta=0.5)
         _, _, sobol_high, _, _ = self._fit_model(beta=2.0)
 
-        assert 'variance_sobol' in sobol_low, "variance_sobol missing from low-beta results"
-        assert 'variance_sobol' in sobol_high, "variance_sobol missing from high-beta results"
-        s3_low = sobol_low['variance_sobol']['first_order'][2]
-        s3_high = sobol_high['variance_sobol']['first_order'][2]
+        assert 'log_variance_sobol' in sobol_low
+        assert 'log_variance_sobol' in sobol_high
+        s3_low = sobol_low['log_variance_sobol']['first_order'][2]
+        s3_high = sobol_high['log_variance_sobol']['first_order'][2]
         assert s3_high > s3_low, \
             f"Var Sobol should increase: beta=0.5 ({s3_low:.4f}) < beta=2 ({s3_high:.4f})"
 

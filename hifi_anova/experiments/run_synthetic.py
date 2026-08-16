@@ -4,9 +4,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-import jax
 import jax.numpy as jnp
-import numpy as np
 
 from hifi_anova.data.synthetic import generate_friedman1, generate_heteroscedastic
 from hifi_anova.data.preprocessing import preprocess_data
@@ -24,7 +22,7 @@ def run_friedman1_experiment():
     X, y = generate_friedman1(n_samples=10000, noise_std=1.0,
                               n_irrelevant=5, seed=42)
     print(f"\nData: {X.shape[0]} samples, {X.shape[1]} variables")
-    print(f"  Active: x1-x5, Irrelevant: x6-x10")
+    print("  Active: x1-x5, Irrelevant: x6-x10")
     print(f"  y range: [{y.min():.2f}, {y.max():.2f}], std: {y.std():.2f}")
 
     # Preprocess
@@ -74,15 +72,12 @@ def run_friedman1_experiment():
 
     # Variance accounting
     va = sobol['variance_accounting']
-    print(f"\nVariance Accounting:")
+    print("\nVariance Accounting:")
     print(f"  First-order total:  {va['first_order_total']:.4f}")
     print(f"  Second-order total: {va['second_order_total']:.4f}")
     print(f"  Total model var:    {va['total_model_variance']:.4f}")
 
     # Test set evaluation
-    phi1_test = jnp.array(
-        __import__('hifi_anova.core.features', fromlist=['build_first_order_features']).build_first_order_features(data['x_test'], config['K1'])
-    )
     from hifi_anova.core.features import build_first_order_features, build_second_order_features
     from hifi_anova.core.pairs import PairManager
     pm = PairManager(10)
@@ -143,12 +138,12 @@ def run_heteroscedastic_experiment():
         si = sobol['mean_sobol']['first_order'][i]
         print(f"  x{i+1}: {si:.4f}")
 
-    if 'variance_sobol' in sobol:
-        print("\nVariance Sobol (first-order):")
+    if 'log_variance_sobol' in sobol:
+        print("\nLog-variance index S^h (first-order):")
         for i in range(10):
-            si = sobol['variance_sobol']['first_order'][i]
+            si = sobol['log_variance_sobol']['first_order'][i]
             print(f"  x{i+1}: {si:.4f}")
-        print("\n  (x3 should dominate variance Sobol since it drives noise)")
+        print("\n  (x3 should dominate S^h as a fitted residual-scale driver)")
 
     return model, results, sobol
 

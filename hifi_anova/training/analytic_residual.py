@@ -1,7 +1,10 @@
 """Analytic training pipeline for linear residual models (RBF, RFF, Nystrom).
 
 Everything is ridge regression. Everything has GCV.
-Sobol indices are guaranteed clean via feature-level projection.
+The feature-level projection keeps the fitted Fourier coefficients — and the
+Sobol indices read off them — identical with or without the residual. (This
+is an in-sample, coefficient-level guarantee; see core/projection.py for the
+scope caveat vs. the population measure.)
 
 The pipeline:
   1. Build Fourier features Phi
@@ -17,36 +20,37 @@ are IDENTICAL whether or not the residual is included. The ridge
 system decouples into two independent solves.
 """
 
-import jax
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 import equinox as eqx
-import numpy as np
-from typing import Optional, Tuple, Dict
+from typing import Tuple, Dict
 
 from ..core.projection import project_features_orthogonal
 from ..model.linear_residual import (
     RBFResidual, RFFResidual, NystromResidual, LinearResidualBase,
+    predict_residual_batch,
 )
 from .ridge import weighted_ridge_solve
 
 
 def create_residual(residual_type: str, residual_config: Dict,
                     x_train: jnp.ndarray, D: int,
-                    key: Optional[jax.Array] = None) -> LinearResidualBase:
+                    key=None) -> LinearResidualBase:
     """Factory: create an unfitted linear residual model.
 
     Args:
         residual_type: 'rbf', 'rff', or 'nystrom'
-        residual_config: dict with type-specific parameters
+        residual_config: dict with type-specific parameters (an optional
+            ``'seed'`` key seeds k-means and the numpy-backend RFF/random
+            draws; default 42)
         x_train: (N, D) training data for center selection
         D: input dimension
-        key: PRNG key
+        key: PRNG key (jax backend only; the default k-means paths and the
+            numpy backend never touch ``jax.random`` — BR-10)
 
     Returns:
         Unfitted LinearResidualBase subclass instance
     """
-    if key is None:
-        key = jax.random.PRNGKey(42)
+    seed = residual_config.get('seed', 42)
 
     if residual_type == 'rbf':
         return RBFResidual.create(
@@ -55,6 +59,7 @@ def create_residual(residual_type: str, residual_config: Dict,
             sigma=residual_config.get('sigma', 0.2),
             method=residual_config.get('center_method', 'kmeans'),
             key=key,
+            seed=seed,
         )
     elif residual_type == 'rff':
         return RFFResidual.create(
@@ -62,6 +67,7 @@ def create_residual(residual_type: str, residual_config: Dict,
             n_features=residual_config.get('n_features', 1000),
             gamma=residual_config.get('gamma', 3.0),
             key=key,
+            seed=seed,
         )
     elif residual_type == 'nystrom':
         return NystromResidual.create(
@@ -71,14 +77,26 @@ def create_residual(residual_type: str, residual_config: Dict,
             kernel=residual_config.get('kernel', 'rbf'),
             signal_variance=residual_config.get('signal_variance', 1.0),
             key=key,
+            seed=seed,
         )
     else:
         raise ValueError(f"Unknown residual type: {residual_type}")
 
 
 def _build_full_fourier_features(x, model):
-    """Build concatenated Fourier features matching the model's configuration."""
-    return model.build_phi_all(x)
+    """Build the low-order design in the SOLVED layout (BR-11).
+
+    The projection targets the design the mean model was actually solved on
+    (``build_phi_all_fit`` — the ``record.Phi`` layout): orthogonality is
+    guaranteed to every solved column, nothing more. On a BR-06
+    order-selective fit the excluded variables' first-order features are NOT
+    projected out — the mean model never fitted them, so the complement is
+    free to capture that structure. For a uniform fit (``fo_included`` unset)
+    this is byte-identical to ``build_phi_all``. In the intercept-only limit
+    (``fo_included=()``, no pairs) the design is (N, 0) and the projection is
+    a no-op: the complement fits everything above f0.
+    """
+    return model.build_phi_all_fit(x)
 
 
 def fit_linear_residual(
@@ -90,7 +108,7 @@ def fit_linear_residual(
     residual_type: str,
     residual_config: Dict,
     lambda_residual: float = 1.0,
-    key: Optional[jax.Array] = None,
+    key=None,
 ) -> Tuple:
     """Fit a linear residual model via the analytic pipeline.
 
@@ -111,14 +129,11 @@ def fit_linear_residual(
         residual_type: 'rbf', 'rff', or 'nystrom'
         residual_config: type-specific parameters
         lambda_residual: regularization strength for residual
-        key: PRNG key
+        key: PRNG key (jax backend only; may stay None — see create_residual)
 
     Returns:
         (updated_model, results_dict)
     """
-    if key is None:
-        key = jax.random.PRNGKey(42)
-
     N, D = x_train.shape
 
     # 1. Create unfitted residual
@@ -126,16 +141,13 @@ def fit_linear_residual(
 
     # 2. Build residual features
     Z_train = residual.build_features(x_train)  # (N, M)
-    Z_val = residual.build_features(x_val)
     M = Z_train.shape[1]
 
     # 3. Build Fourier features
     Phi_train = _build_full_fourier_features(x_train, model)  # (N, F)
-    Phi_val = _build_full_fourier_features(x_val, model)
 
     # 4. Project Z orthogonal to Phi
     Z_train_proj, proj_coeffs = project_features_orthogonal(Z_train, Phi_train)
-    Z_val_proj = Z_val - jnp.asarray(Phi_val, dtype=jnp.float64) @ proj_coeffs
 
     # 5. Compute Fourier residuals
     phi1_train = model.build_phi1(x_train)
@@ -148,7 +160,6 @@ def fit_linear_residual(
     fourier_pred_train = model.mean_model.predict(phi1_train, phi2_train, phi3_train)
     fourier_pred_val = model.mean_model.predict(phi1_val, phi2_val, phi3_val)
     residuals_train = y_train - fourier_pred_train
-    residuals_val = y_val - fourier_pred_val
 
     # 6. Ridge solve on projected features
     reg_res = jnp.full(M, lambda_residual, dtype=jnp.float64)
@@ -170,14 +181,10 @@ def fit_linear_residual(
     )
 
     # Evaluate
-    res_pred_val = jax.vmap(fitted_residual)(x_val)
-    if res_pred_val.ndim > 1:
-        res_pred_val = res_pred_val.squeeze(-1)
+    res_pred_val = predict_residual_batch(fitted_residual, x_val)
     total_pred_val = fourier_pred_val + res_pred_val
     rmse_val = float(jnp.sqrt(jnp.mean((y_val - total_pred_val) ** 2)))
-    res_pred_train = jax.vmap(fitted_residual)(x_train)
-    if res_pred_train.ndim > 1:
-        res_pred_train = res_pred_train.squeeze(-1)
+    res_pred_train = predict_residual_batch(fitted_residual, x_train)
     res_variance = float(jnp.var(res_pred_train))
 
     results = {
@@ -196,10 +203,12 @@ def _create_fitted_residual(unfitted, alpha, proj_coeffs, model):
     """Create a fitted residual by replacing weights and proj_coeffs,
     and storing the Fourier config for prediction-time projection."""
 
-    # Build the constructor kwargs for the specific subclass
-    # Keep proj_coeffs in float64 to preserve orthogonality guarantee
+    # Build the constructor kwargs for the specific subclass.
+    # Both weights and proj_coeffs stay at the fit's float64 precision (the
+    # ridge solve is float64 on either backend): the historical float32 cast
+    # of the weights was dropped with BR-10/DEC-057.
     common_kwargs = dict(
-        weights=jnp.array(alpha, dtype=jnp.float32),
+        weights=jnp.array(alpha, dtype=jnp.float64),
         proj_coeffs=jnp.array(proj_coeffs, dtype=jnp.float64),
         K1=model.K1,
         K2=model.K2,
@@ -211,6 +220,11 @@ def _create_fitted_residual(unfitted, alpha, proj_coeffs, model):
         include_linear_2=getattr(model, 'include_linear_2', True),
         include_linear_3=getattr(model, 'include_linear_3', True),
         basis_name=getattr(model, 'basis_name', 'fourier'),
+        # Solved-design layout (BR-11): the prediction-time projection must
+        # rebuild the exact design the proj_coeffs were fitted against.
+        var_specs=getattr(model, 'var_specs', None),
+        pair_k2=getattr(model, 'pair_k2', None),
+        fo_included=getattr(model, 'fo_included', None),
     )
 
     if isinstance(unfitted, RBFResidual):

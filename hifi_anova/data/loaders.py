@@ -24,7 +24,10 @@ def load_openml_dataset(name: str) -> Tuple[np.ndarray, np.ndarray, list]:
         if name == 'kin8nm':
             data = fetch_openml(name='kin8nm', version=1, as_frame=False)
         elif name == 'concrete':
-            data = fetch_openml(name='concrete', version=1, as_frame=False)
+            # OpenML has no dataset literally named 'concrete'; this is the UCI
+            # Concrete Compressive Strength set from the curated OpenML-CTR23
+            # suite, pinned by id (several active versions exist by name).
+            data = fetch_openml(data_id=44959, as_frame=False)
         else:
             data = fetch_openml(name=name, version=1, as_frame=False)
 

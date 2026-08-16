@@ -4,10 +4,21 @@ The problem is CONVEX in w_h. Newton converges quadratically.
 Armijo backtracking line search ensures monotone decrease and
 prevents divergence when h values are extreme (exp(h) overflow).
 Typically converges in 5-10 steps.
+
+The fitted log-variance h(x_n) is confined to the box [-LOG_VAR_CLIP,
+LOG_VAR_CLIP] (shared with ``predict_variance`` so fit and prediction agree).
+The objective, gradient, and Hessian are all evaluated on the CLAMPED objective
+(P1-1): a sample whose h(x_n) has saturated the box contributes to neither the
+gradient nor the Hessian, because the clamped per-sample term is flat in theta
+there. This makes the Newton direction a genuine descent direction of the
+line-searched objective at every point, and the finite-difference gradient
+matches near and beyond both bounds. When no sample is clipped (the interior
+case) the mask is all-ones and the solve is byte-identical to an unconstrained
+Newton step with exact gradient and Hessian.
 """
 
-import jax
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
+from ..array_backend import solve_pos
 from typing import Tuple
 
 from ..model.variance_model import LOG_VAR_CLIP
@@ -25,6 +36,34 @@ def _objective(Psi_aug, theta, r2, reg_aug):
     data_term = jnp.sum(0.5 * h_clamped + 0.5 * r2 / sigma2)
     reg_term = 0.5 * jnp.sum(reg_aug * theta ** 2)
     return data_term + reg_term
+
+
+def _grad_hess(Psi_aug, theta, r2, reg_aug):
+    """Gradient and (undamped) Hessian of the CLAMPED ``_objective`` in theta.
+
+    Box-consistent (P1-1): a sample whose unclamped h = Psi_aug @ theta has
+    saturated ``[-LOG_VAR_CLIP, LOG_VAR_CLIP]`` contributes nothing to either the
+    gradient or the Hessian, because the clamped per-sample term is flat in theta
+    there. This is exactly the (sub)gradient/Hessian of the objective the line
+    search evaluates, so finite-difference checks agree near and beyond the bound;
+    in the interior (no clipped sample) ``interior`` is all-ones and the result is
+    the ordinary exact gradient and Hessian.
+    """
+    h = Psi_aug @ theta
+    h_clamped = jnp.clip(h, -LOG_VAR_CLIP, LOG_VAR_CLIP)
+    sigma2 = jnp.exp(h_clamped)
+    interior = (jnp.abs(h) < LOG_VAR_CLIP).astype(jnp.float64)  # (N,)
+    ratio = r2 / sigma2  # r_n^2 / sigma_n^2
+
+    # Gradient: g_n = 1/2 * (1 - r_n^2/sigma_n^2) * psi_n  (interior only)
+    g_per_sample = 0.5 * (1.0 - ratio) * interior  # (N,)
+    grad = Psi_aug.T @ g_per_sample + reg_aug * theta
+
+    # Hessian: H = sum_n 1/2 * (r_n^2/sigma_n^2) * psi_n psi_n^T + diag(reg)
+    # (clamped samples are flat -> zero curvature)
+    h_weights = 0.5 * ratio * interior  # (N,)
+    H = (Psi_aug.T * h_weights[None, :]) @ Psi_aug + jnp.diag(reg_aug)
+    return grad, H
 
 
 def newton_solve_log_variance(
@@ -77,28 +116,18 @@ def newton_solve_log_variance(
     theta = jnp.concatenate([jnp.array([h0]), w_h])
 
     for iteration in range(max_iter):
-        # h(x_n) = Psi_aug @ theta
-        h = Psi_aug @ theta
-        # Clamp to prevent exp overflow (exp(30) ~ 1e13, safe for float64);
-        # LOG_VAR_CLIP is shared with predict_variance so fit == prediction.
-        h_clamped = jnp.clip(h, -LOG_VAR_CLIP, LOG_VAR_CLIP)
-        sigma2 = jnp.exp(h_clamped)
-
-        # Gradient: g_n = 1/2 * (1 - r_n^2 / sigma_n^2) * psi_n
-        # Plus regularization gradient: reg * theta
-        ratio = r2 / sigma2  # r_n^2 / sigma_n^2
-        g_per_sample = 0.5 * (1.0 - ratio)  # (N,)
-        grad = Psi_aug.T @ g_per_sample + reg_aug * theta
-
-        # Hessian: H = sum_n 1/2 * (r_n^2/sigma_n^2) * psi_n psi_n^T + diag(reg)
-        h_weights = 0.5 * ratio  # (N,)
-        H = (Psi_aug.T * h_weights[None, :]) @ Psi_aug + jnp.diag(reg_aug)
+        # Box-consistent gradient and Hessian of the clamped objective (P1-1):
+        # clipped samples contribute nothing (their clamped term is flat in
+        # theta), so the Newton direction is a descent direction of the objective
+        # the line search evaluates. In the interior this is the exact gradient
+        # and Hessian; LOG_VAR_CLIP is shared with predict_variance (fit==pred).
+        grad, H = _grad_hess(Psi_aug, theta, r2, reg_aug)
 
         # Add damping for numerical stability
         H = H + damping * jnp.eye(F + 1, dtype=jnp.float64)
 
         # Newton direction
-        delta = jax.scipy.linalg.solve(H, grad, assume_a='pos')
+        delta = solve_pos(H, grad)
 
         # Armijo backtracking line search
         obj_current = _objective(Psi_aug, theta, r2, reg_aug)

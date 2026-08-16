@@ -21,9 +21,8 @@ Key properties:
   - Piecewise constant: no classical derivatives, use Besov penalty instead
 """
 
-import jax.numpy as jnp
-import numpy as np
-from typing import Optional, Tuple
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
+from typing import Tuple
 
 
 class HaarBasis:
@@ -83,14 +82,17 @@ class HaarBasis:
                 mid = left + interval_width / 2.0
                 right = left + interval_width
 
+                # Rightmost cell is closed at right == 1.0 so x == 1.0 (the
+                # max sample after min-max scaling) doesn't produce an
+                # all-zero Haar row. Matches _build_haar_basis in features.py.
+                if k == n_positions - 1:
+                    in_right_half = (x >= mid) & (x <= right)
+                else:
+                    in_right_half = (x >= mid) & (x < right)
                 psi = jnp.where(
                     (x >= left) & (x < mid),
                     scale_factor,
-                    jnp.where(
-                        (x >= mid) & (x < right),
-                        -scale_factor,
-                        0.0
-                    )
+                    jnp.where(in_right_half, -scale_factor, 0.0)
                 )
                 features.append(psi)
 

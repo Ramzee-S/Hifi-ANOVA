@@ -101,7 +101,7 @@ def experiment_2_heteroscedastic():
     print("EXPERIMENT 2: Heteroscedastic Dual Sobol Spectrum")
     print("=" * 70)
     print("\nMean: Friedman-1, Variance: sigma(x) = 0.5 + 2*x3")
-    print("Expected: x3 dominates variance Sobol\n")
+    print("Expected: x3 dominates the log-variance index S^h\n")
 
     X, y, sigma_true = generate_heteroscedastic(
         n_samples=10000, noise_variable=2, seed=42
@@ -136,8 +136,9 @@ def experiment_2_heteroscedastic():
     print(f"{'--------':<10} {'------':<12} {'----------':<12}")
     for i in range(10):
         sm = sobol['mean_sobol']['first_order'][i]
-        sv = sobol['variance_sobol']['first_order'][i] if 'variance_sobol' in sobol else 0
-        marker = " <-- variance driver" if sv > 0.3 else ""
+        sv = (sobol['log_variance_sobol']['first_order'][i]
+              if 'log_variance_sobol' in sobol else 0)
+        marker = " <-- log-variance driver" if sv > 0.3 else ""
         print(f"  {var_names[i]:<8} {sm:<12.4f} {sv:<12.4f}{marker}")
 
     # Calibration
@@ -207,5 +208,5 @@ if __name__ == '__main__':
     print("\nFigures saved to figures/")
     print("Key findings:")
     print("  1. Sobol indices correctly identify active variables in Friedman-1")
-    print("  2. Dual Sobol spectrum identifies x3 as variance driver")
+    print("  2. Dual spectrum identifies x3 as a log-variance driver")
     print("  3. Model is robust across noise levels")

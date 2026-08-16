@@ -26,11 +26,11 @@ Usage:
     xi_grid, xj_grid, f_ij = second_order_on_grid(model, pair_index=0)
 """
 
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 import numpy as np
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
-from ..core.features import build_per_variable_basis, basis_size
+from ..core.features import build_per_variable_basis
 
 
 def evaluate_first_order(
@@ -91,8 +91,22 @@ def evaluate_second_order(
 
     if mm.pair_block_info is not None:
         vi, vj, Bi, Bj, _, _ = mm.pair_block_info[pair_index]
-        bni, Ki, ili, _, _ = mm.var_specs[vi]
-        bnj, Kj, ilj, _, _ = mm.var_specs[vj]
+        if mm.pair_k2 is not None:
+            # Per-pair K2 (uniform basis family): both sides of the block were
+            # built at the PAIR's own order (build_second_order_features_per_pair),
+            # not the variables' first-order specs.
+            bni = bnj = mm.basis_name
+            Ki = Kj = int(mm.pair_k2[pair_index])
+            ili = ilj = mm.include_linear_2
+        elif mm.var_specs is not None:
+            # Mixed per-variable bases: each side uses its variable's spec.
+            bni, Ki, ili, _, _ = mm.var_specs[vi]
+            bnj, Kj, ilj, _, _ = mm.var_specs[vj]
+        else:
+            # Uniform scalar K2 with block info present.
+            bni = bnj = mm.basis_name
+            Ki = Kj = mm.K2
+            ili = ilj = mm.include_linear_2
     else:
         vi, vj = int(model.pair_indices[pair_index, 0]), int(model.pair_indices[pair_index, 1])
         bni = bnj = mm.basis_name

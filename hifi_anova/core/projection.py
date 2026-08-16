@@ -3,10 +3,17 @@
 Projects residual features Z orthogonal to Fourier features Phi
 BEFORE fitting. This guarantees:
 
-  1. Phi^T @ Z_proj = 0  (exactly, to machine precision)
+  1. Phi^T @ Z_proj = 0  (exactly, to machine precision, over the training rows)
   2. Ridge on [Phi | Z_proj] decouples into independent solves
-  3. Fourier coefficients are identical with or without the residual
-  4. Sobol indices are guaranteed clean — no drift, no approximation
+  3. Fourier coefficients — and the Sobol indices read off them — are
+     identical with or without the residual
+
+Scope caveat: the orthogonality is EMPIRICAL (in-sample), not with respect
+to the input measure. Z_proj can still carry low-order ANOVA mass under the
+measure, so the total model's population Sobol decomposition is not
+guaranteed unchanged by adding the residual. The measure-level projection
+(model.linear_residual.ProjectedResidual via training.redecompose) is the
+population-correct construction.
 
 This is ONLY for linear-in-parameters residuals (RBF, RFF, Nystrom).
 For nonlinear residuals (NN), use training/projection.py (output-level).
@@ -15,8 +22,7 @@ The projection is computed ONCE at initialization and stored as a
 coefficient matrix C for applying to new data at prediction time.
 """
 
-import jax.numpy as jnp
-import numpy as np
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 from typing import Tuple
 
 

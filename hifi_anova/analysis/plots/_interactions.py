@@ -33,7 +33,7 @@ def plot_interaction_grid(
         n_grid: grid resolution
     """
     import jax.numpy as jnp
-    from ..core.features import build_per_variable_basis, basis_size
+    from ...core.features import build_per_variable_basis, basis_size
     apply_style()
 
     K2 = model.K2
@@ -73,17 +73,30 @@ def plot_interaction_grid(
                                       (figsize_per - 0.3) * nrows),
                              squeeze=False)
 
+    basis_name = getattr(model, 'basis_name', 'fourier')
     incl_lin = getattr(model, 'include_linear_2', True)
-    B = basis_size(K2, incl_lin)
+    # Per-pair second-order order: for a term-structure model K2 holds
+    # max(pair_k2), so each pair's block/basis must use its own order — a pair
+    # with a smaller order has fewer coefficients than the uniform max would
+    # imply (a uniform reshape(B, B) raises on the ragged layout).
+    _pair_k2 = getattr(model, 'pair_k2', None)
     x_grid = jnp.linspace(0, 1, n_grid)
     x_1d = x_grid[:, None]
-    basis = build_per_variable_basis(x_1d, K2, include_linear=incl_lin)
-    basis_1d = np.asarray(basis[:, 0, :])  # (n_grid, B)
+
+    def _block_basis(k2_p):
+        b = basis_size(k2_p, incl_lin, basis_name)
+        bas = build_per_variable_basis(x_1d, k2_p, include_linear=incl_lin,
+                                       basis_name=basis_name)
+        return b, np.asarray(bas[:, 0, :])  # (n_grid, b)
+
+    _uniform_cache = None if _pair_k2 is not None else _block_basis(K2)
 
     for idx, (p, i, j, s) in enumerate(show):
         row, col = divmod(idx, ncols)
         ax = axes[row, col]
 
+        k2_p = int(_pair_k2[p]) if _pair_k2 is not None else K2
+        B, basis_1d = _block_basis(k2_p) if _pair_k2 is not None else _uniform_cache
         wp = np.asarray(model.mean_model.get_coefficients_for_pair(p))
         W = wp.reshape(B, B)
         Z = basis_1d @ W @ basis_1d.T
@@ -195,7 +208,6 @@ def plot_interaction_chord(
     proportional to first-order Sobol. Chords connect interacting pairs
     with width proportional to S_ij.
     """
-    from matplotlib.patches import FancyArrowPatch, Arc
     from matplotlib.path import Path as MPath
     import matplotlib.patches as mpatches
     apply_style()
@@ -206,7 +218,7 @@ def plot_interaction_chord(
     if variable_names is None:
         variable_names = [f"$x_{{{i+1}}}$" for i in range(D)]
 
-    # Filter significant interactions
+    # Filter interactions above the display threshold
     sig_pairs = {k: v for k, v in second.items() if v > threshold}
     if not sig_pairs:
         fig, ax = plt.subplots(figsize=figsize)

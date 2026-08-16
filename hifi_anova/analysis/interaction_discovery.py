@@ -1,4 +1,4 @@
-"""Projection-based residual sieve: discover missing structure at any order.
+"""Projection-based residual sieve: flag possible missing structure.
 
 The residual sieve projects the model residual onto feature subspaces at each
 interaction level to measure how much variance each subspace would capture —
@@ -6,14 +6,17 @@ without fitting it. This is exact for linear models.
 
 Available scans:
   - scan_missing_pairs:          per-pair score for mean residual
-  - scan_missing_variance_pairs: per-pair score for noise residual
+  - scan_missing_variance_pairs: per-pair fitted log-residual-scale score
   - scan_missing_triples:        per-triple score for mean residual
   - scan_residual_subspace:      score for RBF/RFF residual subspace
   - unified_residual_sieve:      decompose residual across ALL levels at once
   - auto_decide_stages:          use sieve scores to decide which stages to add
 
-Each per-group test is a tiny solve. Scanning all C(D,2) pairs or C(D,3) triples
-takes seconds even for D=50.
+Each per-group scan is a ranking heuristic, not a calibrated hypothesis test.
+These scans — like the package's BIC, group-lasso, 1-SE, and pruning choices —
+are model-selection heuristics, **not** the manuscript's FDR-controlled
+Theorem-2 procedures. Threshold crossings are therefore called "flagged" or
+"above threshold", never statistically significant.
 
 Usage:
     from hifi_anova.analysis.interaction_discovery import unified_residual_sieve
@@ -24,28 +27,156 @@ Usage:
     # Shows: how much residual is second-order? third-order? smooth (RBF)? noise?
 """
 
+import warnings
+
 import numpy as np
-import jax
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 from typing import Dict, List, Optional, Tuple
 from itertools import combinations
 from dataclasses import dataclass, field
 
 
-@dataclass
+_ALIAS_UNSET = object()
+
+
+def _resolve_flag_threshold(flag_threshold, significance_threshold, default):
+    """Resolve the one-release deprecated threshold keyword alias."""
+    if significance_threshold is not _ALIAS_UNSET:
+        warnings.warn(
+            "significance_threshold is deprecated; use flag_threshold. "
+            "Residual-sieve threshold crossings are heuristic flags, not "
+            "significance tests.",
+            DeprecationWarning, stacklevel=3)
+        if flag_threshold is not _ALIAS_UNSET:
+            raise TypeError(
+                "Pass only flag_threshold; significance_threshold is its "
+                "deprecated alias.")
+        return float(significance_threshold)
+    return default if flag_threshold is _ALIAS_UNSET else float(flag_threshold)
+
+
+class _DiscoveryResult(dict):
+    """Canonical discovery mapping with warning-emitting legacy key aliases."""
+    _ALIASES = {
+        'n_significant': 'n_flagged',
+        'significance_threshold': 'flag_threshold',
+    }
+
+    def _canonical_key(self, key):
+        canonical = self._ALIASES.get(key)
+        if canonical is not None:
+            warnings.warn(
+                f"{key} is deprecated; use {canonical}. Residual-sieve "
+                "threshold crossings are heuristic flags, not significance "
+                "tests.",
+                DeprecationWarning, stacklevel=3)
+            return canonical
+        return key
+
+    def __getitem__(self, key):
+        return super().__getitem__(self._canonical_key(key))
+
+    def get(self, key, default=None):
+        return super().get(self._canonical_key(key), default)
+
+    def __contains__(self, key):
+        return super().__contains__(self._canonical_key(key))
+
+
+@dataclass(init=False)
 class MissingPairResult:
-    """Results from scanning unselected pairs."""
+    """Exploratory ranking from scanning unselected pairs (not an FDR test)."""
     # Per-pair variance captured from residual
     pair_scores: Dict[tuple, float]
     # Ranked list: [(pair, score), ...] highest first
     ranked_pairs: List[Tuple[tuple, float]]
     # Summary
     n_scanned: int
-    n_significant: int
+    n_flagged: int
     total_residual_variance: float
     total_captured_by_missing: float
+    flag_threshold: float = 0.001
     # Per-pair details
     pair_details: Dict[tuple, dict] = field(default_factory=dict)
+
+    def __init__(
+        self,
+        pair_scores,
+        ranked_pairs,
+        n_scanned,
+        n_flagged=_ALIAS_UNSET,
+        total_residual_variance=_ALIAS_UNSET,
+        total_captured_by_missing=_ALIAS_UNSET,
+        pair_details=_ALIAS_UNSET,
+        *,
+        flag_threshold=0.001,
+        n_significant=_ALIAS_UNSET,
+    ):
+        """Build a result while preserving the pre-DEC-050 constructor.
+
+        The first seven positional slots retain their historical order; the
+        canonical ``flag_threshold`` is keyword-only. ``n_significant=`` is a
+        one-release warning alias for ``n_flagged=``.
+        """
+        if n_significant is not _ALIAS_UNSET:
+            warnings.warn(
+                "n_significant is deprecated; use n_flagged. Residual-sieve "
+                "threshold crossings are heuristic flags, not significance "
+                "tests.",
+                DeprecationWarning, stacklevel=2)
+            if n_flagged is not _ALIAS_UNSET:
+                raise TypeError(
+                    "Pass only n_flagged; n_significant is its deprecated alias.")
+            n_flagged = n_significant
+        missing = [
+            name for name, value in (
+                ('n_flagged', n_flagged),
+                ('total_residual_variance', total_residual_variance),
+                ('total_captured_by_missing', total_captured_by_missing),
+            ) if value is _ALIAS_UNSET]
+        if missing:
+            raise TypeError("Missing required argument(s): " + ", ".join(missing))
+
+        self.pair_scores = pair_scores
+        self.ranked_pairs = ranked_pairs
+        self.n_scanned = n_scanned
+        self.n_flagged = n_flagged
+        self.total_residual_variance = total_residual_variance
+        self.total_captured_by_missing = total_captured_by_missing
+        self.flag_threshold = flag_threshold
+        self.pair_details = ({} if pair_details is _ALIAS_UNSET
+                             else pair_details)
+
+    def __setstate__(self, state):
+        """Migrate pre-DEC-050 pickle state to canonical field names."""
+        state = dict(state)
+        legacy_count = state.pop('n_significant', _ALIAS_UNSET)
+        if 'n_flagged' not in state and legacy_count is not _ALIAS_UNSET:
+            warnings.warn(
+                "Loaded legacy MissingPairResult.n_significant; migrated it "
+                "to n_flagged.",
+                DeprecationWarning, stacklevel=2)
+            state['n_flagged'] = legacy_count
+        state.setdefault('flag_threshold', 0.001)
+        state.setdefault('pair_details', {})
+        self.__dict__.update(state)
+
+    @property
+    def n_significant(self):
+        """Deprecated alias for :attr:`n_flagged` (one-release bridge)."""
+        warnings.warn(
+            "n_significant is deprecated; use n_flagged. Residual-sieve "
+            "threshold crossings are heuristic flags, not significance tests.",
+            DeprecationWarning, stacklevel=2)
+        return self.n_flagged
+
+    @property
+    def significance_threshold(self):
+        """Deprecated alias for :attr:`flag_threshold` (one-release bridge)."""
+        warnings.warn(
+            "significance_threshold is deprecated; use flag_threshold.",
+            DeprecationWarning, stacklevel=2)
+        return self.flag_threshold
 
 
 def scan_missing_pairs(
@@ -54,8 +185,10 @@ def scan_missing_pairs(
     y_data: jnp.ndarray,
     selected_pairs: Optional[List[tuple]] = None,
     K2: Optional[int] = None,
-    significance_threshold: float = 0.001,
+    flag_threshold=_ALIAS_UNSET,
     verbose: bool = True,
+    *,
+    significance_threshold=_ALIAS_UNSET,
 ) -> MissingPairResult:
     """Scan all unselected pairs for residual variance capture.
 
@@ -64,8 +197,10 @@ def scan_missing_pairs(
       2. Project residual onto Phi_pair: r_proj = Phi (Phi^T Phi)^{-1} Phi^T r
       3. Score = Var(r_proj) / Var(r)
 
-    This tells you exactly how much variance pair (i,j) would capture
-    if added to the model — without fitting it.
+    This exploratory sieve ranks how much residual variance each pair's
+    subspace captures without fitting the full model. It is a model-selection
+    heuristic, not a calibrated p-value or the manuscript's FDR-controlled
+    Theorem-2 procedure.
 
     Args:
         model: fitted HiFiANOVA (with some pairs selected)
@@ -74,14 +209,18 @@ def scan_missing_pairs(
         selected_pairs: list of already-fitted pairs [(i,j), ...].
             If None, reads from model.pair_indices.
         K2: harmonic order for pair features. If None, uses model.K2.
-        significance_threshold: pairs capturing more than this fraction
-            of residual variance are flagged as significant.
+        flag_threshold: pairs capturing more than this fraction of residual
+            variance are flagged for inspection.
+        significance_threshold: deprecated alias for ``flag_threshold``.
         verbose: print results
 
     Returns:
         MissingPairResult with per-pair scores and rankings
     """
     from ..core.features import build_second_order_features
+
+    flag_threshold = _resolve_flag_threshold(
+        flag_threshold, significance_threshold, 0.001)
 
     x_data = jnp.asarray(x_data)
     y_data = jnp.asarray(y_data)
@@ -110,7 +249,8 @@ def scan_missing_pairs(
             print("  Residual variance is zero — nothing to discover.")
         return MissingPairResult(
             pair_scores={}, ranked_pairs=[], n_scanned=0,
-            n_significant=0, total_residual_variance=0.0,
+            n_flagged=0, flag_threshold=flag_threshold,
+            total_residual_variance=0.0,
             total_captured_by_missing=0.0)
 
     # All possible pairs
@@ -122,11 +262,10 @@ def scan_missing_pairs(
             print("  All pairs already selected — nothing to scan.")
         return MissingPairResult(
             pair_scores={}, ranked_pairs=[], n_scanned=0,
-            n_significant=0, total_residual_variance=residual_var,
+            n_flagged=0, flag_threshold=flag_threshold,
+            total_residual_variance=residual_var,
             total_captured_by_missing=0.0)
 
-    x_np = np.asarray(x_data, dtype=np.float64)
-    N = x_np.shape[0]
     pair_scores = {}
     pair_details = {}
 
@@ -149,15 +288,16 @@ def scan_missing_pairs(
 
     # Rank by captured variance
     ranked = sorted(pair_scores.items(), key=lambda x: -x[1])
-    n_sig = sum(1 for _, s in ranked if s > significance_threshold)
+    n_flagged = sum(1 for _, s in ranked if s > flag_threshold)
     total_captured = sum(pair_scores.values())
 
     if verbose:
         print(f"  Scanned {len(missing_pairs)} unselected pairs "
               f"(residual var = {residual_var:.4f})")
-        print(f"  {n_sig} significant (>{significance_threshold:.1%} of residual):")
+        print("  Exploratory selection heuristic (not an FDR-controlled test).")
+        print(f"  {n_flagged} flagged (>{flag_threshold:.1%} of residual):")
         for (i, j), score in ranked[:min(10, len(ranked))]:
-            flag = " ***" if score > significance_threshold else ""
+            flag = " *** above threshold" if score > flag_threshold else ""
             print(f"    ({i},{j}): {score:.4f} "
                   f"({score * residual_var:.4f} variance){flag}")
 
@@ -165,7 +305,8 @@ def scan_missing_pairs(
         pair_scores=pair_scores,
         ranked_pairs=ranked,
         n_scanned=len(missing_pairs),
-        n_significant=n_sig,
+        n_flagged=n_flagged,
+        flag_threshold=flag_threshold,
         total_residual_variance=residual_var,
         total_captured_by_missing=total_captured,
         pair_details=pair_details,
@@ -177,29 +318,38 @@ def scan_missing_variance_pairs(
     x_data: jnp.ndarray,
     y_data: jnp.ndarray,
     Kh: Optional[int] = None,
-    significance_threshold: float = 0.001,
+    flag_threshold=_ALIAS_UNSET,
     verbose: bool = True,
+    *,
+    significance_threshold=_ALIAS_UNSET,
 ) -> MissingPairResult:
     """Scan for missing variance (noise) interactions.
 
     Same as scan_missing_pairs but applied to the VARIANCE residual:
     does the noise structure depend on pair (i,j)?
 
-    Projects log(r^2) - h_fitted onto pair features to discover
-    higher-order noise structure.
+    Projects ``log(r^2) - h_fitted`` onto pair features as a noisy
+    log-residual-moment ranking proxy. Under an ideal known mean it contains
+    the additive ``log chi^2_1`` term (and hence a constant expectation shift);
+    fitted residuals add mean-estimation bias. It is not an unbiased estimator
+    of log-variance, a calibrated test, or the manuscript's FDR procedure.
 
     Args:
         model: fitted HiFiANOVA with variance_model
         x_data: (N, D) inputs
         y_data: (N,) targets
         Kh: harmonic order for variance pairs (default: model.Kh or 2)
-        significance_threshold: significance threshold
+        flag_threshold: heuristic fraction threshold for flagging
+        significance_threshold: deprecated alias for ``flag_threshold``
         verbose: print results
 
     Returns:
         MissingPairResult for variance interactions
     """
     from ..core.features import build_second_order_features
+
+    flag_threshold = _resolve_flag_threshold(
+        flag_threshold, significance_threshold, 0.001)
 
     x_data = jnp.asarray(x_data)
     y_data = jnp.asarray(y_data)
@@ -217,7 +367,8 @@ def scan_missing_variance_pairs(
     if model.variance_model is not None:
         log_var_pred = np.asarray(jnp.log(var_pred), dtype=np.float64)
         # Variance residual = log(r^2) - log(sigma^2_predicted)
-        # Using log(r^2) is noisy but unbiased for log-variance
+        # Noisy log-residual-moment proxy: includes log(chi^2_1), its constant
+        # expectation shift, and contamination from estimating the mean.
         log_r2 = np.log(np.maximum(r2, 1e-20))
         var_residual = log_r2 - log_var_pred
     else:
@@ -226,8 +377,6 @@ def scan_missing_variance_pairs(
         var_residual = log_r2 - np.mean(log_r2)
 
     var_residual_var = float(np.var(var_residual))
-    x_np = np.asarray(x_data, dtype=np.float64)
-    N = x_np.shape[0]
 
     # Get current variance pairs
     var_pairs_set = set()
@@ -259,22 +408,24 @@ def scan_missing_variance_pairs(
         }
 
     ranked = sorted(pair_scores.items(), key=lambda x: -x[1])
-    n_sig = sum(1 for _, s in ranked if s > significance_threshold)
+    n_flagged = sum(1 for _, s in ranked if s > flag_threshold)
 
     if verbose:
         print(f"  Variance pair scan: {len(missing_pairs)} pairs "
               f"(var residual var = {var_residual_var:.4f})")
-        if n_sig > 0:
-            print(f"  {n_sig} significant noise interactions found:")
+        print("  Exploratory selection heuristic (not an FDR-controlled test).")
+        if n_flagged > 0:
+            print(f"  {n_flagged} variance interactions flagged:")
         for (i, j), score in ranked[:min(8, len(ranked))]:
-            if score > significance_threshold:
-                print(f"    ({i},{j}): {score:.4f} ***")
+            if score > flag_threshold:
+                print(f"    ({i},{j}): {score:.4f} *** above threshold")
 
     return MissingPairResult(
         pair_scores=pair_scores,
         ranked_pairs=ranked,
         n_scanned=len(missing_pairs),
-        n_significant=n_sig,
+        n_flagged=n_flagged,
+        flag_threshold=flag_threshold,
         total_residual_variance=var_residual_var,
         total_captured_by_missing=sum(pair_scores.values()),
         pair_details=pair_details,
@@ -289,15 +440,18 @@ def iterative_pair_discovery(
     y_val: jnp.ndarray,
     max_rounds: int = 5,
     pairs_per_round: int = 3,
-    significance_threshold: float = 0.005,
+    flag_threshold=_ALIAS_UNSET,
     K2: Optional[int] = None,
     verbose: bool = True,
+    *,
+    significance_threshold=_ALIAS_UNSET,
 ) -> Dict:
     """Iterative pair discovery: fit → scan → add → refit.
 
     A cheap alternative to fitting all C(D,2) pairs: start with selected
-    pairs, scan for missed ones, add the most significant, and refit.
-    Continues until no significant pairs remain or max_rounds reached.
+    pairs, scan for missed ones, add the highest-ranked flagged ones, and refit.
+    Continues until no pairs are above threshold or max_rounds is reached. This
+    is exploratory model selection, not an FDR-controlled test.
 
     Args:
         model: fitted HiFiANOVA (with some pairs)
@@ -305,7 +459,8 @@ def iterative_pair_discovery(
         x_val, y_val: validation data
         max_rounds: maximum discovery rounds
         pairs_per_round: how many pairs to add per round
-        significance_threshold: minimum fraction to consider significant
+        flag_threshold: minimum fraction to flag for addition
+        significance_threshold: deprecated alias for ``flag_threshold``
         K2: harmonic order for discovery
         verbose: print progress
 
@@ -316,12 +471,13 @@ def iterative_pair_discovery(
           final_model: model with discovered pairs added
           improvement: RMSE improvement from discovered pairs
     """
-    from ..training.trainer import HiFiANOVATrainer
     from ..training.ridge import weighted_ridge_solve
     from ..training.regularization import build_regularization_vector
     from ..core.features import build_second_order_features, basis_size
-    from ..core.gram import build_gram_matrix_2d, build_gram_matrix
     from ..core.pairs import PairManager
+
+    flag_threshold = _resolve_flag_threshold(
+        flag_threshold, significance_threshold, 0.005)
 
     K2_use = K2 if K2 is not None else model.K2
     D = model.D
@@ -348,18 +504,18 @@ def iterative_pair_discovery(
         scan = scan_missing_pairs(
             current_model, x_train, y_train,
             selected_pairs=current_pairs, K2=K2_use,
-            significance_threshold=significance_threshold,
+            flag_threshold=flag_threshold,
             verbose=verbose,
         )
 
-        if scan.n_significant == 0:
+        if scan.n_flagged == 0:
             if verbose:
-                print("  No significant missing pairs — stopping.")
+                print("  No missing pairs above threshold — stopping.")
             break
 
         # Pick top pairs to add
         new_pairs = [pair for pair, score in scan.ranked_pairs[:pairs_per_round]
-                     if score > significance_threshold]
+                     if score > flag_threshold]
         if not new_pairs:
             break
 
@@ -396,7 +552,6 @@ def iterative_pair_discovery(
         w1 = w[:F1]
         w2 = w[F1:]
 
-        G2 = build_gram_matrix_2d(build_gram_matrix(K2_use, _il1, _bn))
         mean_model = MeanModel(
             f0=jnp.array(f0, dtype=jnp.float32),
             w1=jnp.array(w1, dtype=jnp.float32),
@@ -409,9 +564,6 @@ def iterative_pair_discovery(
             K1=K1, K2=K2_use, K3=model.K3, Kh=model.Kh, D=D,
             pair_indices=np.array(pair_mgr.pair_indices),
             triple_indices=model.triple_indices,
-            G1=model.G1,
-            G2=np.array(G2),
-            G3=model.G3,
         )
 
         rmse_val = float(jnp.sqrt(jnp.mean(
@@ -497,13 +649,16 @@ def scan_missing_triples(
     y_data: jnp.ndarray,
     selected_triples: Optional[List[tuple]] = None,
     K3: Optional[int] = None,
-    significance_threshold: float = 0.001,
+    flag_threshold=_ALIAS_UNSET,
     max_triples: int = 500,
     verbose: bool = True,
+    *,
+    significance_threshold=_ALIAS_UNSET,
 ) -> Dict:
     """Scan unselected triples for residual variance capture.
 
-    Same principle as scan_missing_pairs but for three-way interactions.
+    Same exploratory ranking principle as scan_missing_pairs but for three-way
+    interactions. This is not a calibrated p-value or FDR-controlled test.
     Each test is a (2K+1)^3 × (2K+1)^3 solve — still tiny for K3=1.
 
     With D=20, C(20,3)=1140 triples. At K3=1 that's 1140 × 27×27 solves — seconds.
@@ -515,14 +670,18 @@ def scan_missing_triples(
         y_data: (N,) targets
         selected_triples: already-fitted triples. If None, reads from model.
         K3: harmonic order (default: model.K3 or 1)
-        significance_threshold: threshold for flagging
+        flag_threshold: heuristic threshold for flagging
+        significance_threshold: deprecated alias for ``flag_threshold``
         max_triples: cap on number of triples to scan
         verbose: print results
 
     Returns:
-        Dict with triple_scores, ranked_triples, n_significant, etc.
+        Dict with triple_scores, ranked_triples, n_flagged, flag_threshold, etc.
     """
     from ..core.features import build_third_order_features
+
+    flag_threshold = _resolve_flag_threshold(
+        flag_threshold, significance_threshold, 0.001)
 
     x_data = jnp.asarray(x_data)
     y_data = jnp.asarray(y_data)
@@ -549,8 +708,10 @@ def scan_missing_triples(
     if residual_var < 1e-15:
         if verbose:
             print("  Residual variance is zero — nothing to discover.")
-        return {'triple_scores': {}, 'ranked_triples': [], 'n_scanned': 0,
-                'n_significant': 0, 'total_residual_variance': 0.0}
+        return _DiscoveryResult(
+            triple_scores={}, ranked_triples=[], n_scanned=0,
+            n_flagged=0, flag_threshold=flag_threshold,
+            total_residual_variance=0.0)
 
     # All possible triples (capped at max_triples)
     all_triples = list(combinations(range(D), 3))
@@ -575,23 +736,25 @@ def scan_missing_triples(
         triple_scores[(i, j, k)] = frac
 
     ranked = sorted(triple_scores.items(), key=lambda x: -x[1])
-    n_sig = sum(1 for _, s in ranked if s > significance_threshold)
+    n_flagged = sum(1 for _, s in ranked if s > flag_threshold)
 
     if verbose:
         print(f"  Triple scan: {len(missing)} triples "
               f"(residual var = {residual_var:.4f})")
-        print(f"  {n_sig} significant (>{significance_threshold:.1%}):")
+        print("  Exploratory selection heuristic (not an FDR-controlled test).")
+        print(f"  {n_flagged} flagged (>{flag_threshold:.1%}):")
         for triple, score in ranked[:min(8, len(ranked))]:
-            if score > significance_threshold:
-                print(f"    {triple}: {score:.4f} ***")
+            if score > flag_threshold:
+                print(f"    {triple}: {score:.4f} *** above threshold")
 
-    return {
+    return _DiscoveryResult({
         'triple_scores': triple_scores,
         'ranked_triples': ranked,
         'n_scanned': len(missing),
-        'n_significant': n_sig,
+        'n_flagged': n_flagged,
+        'flag_threshold': flag_threshold,
         'total_residual_variance': residual_var,
-    }
+    })
 
 
 # =============================================================================
@@ -735,7 +898,7 @@ def unified_residual_sieve(
     max_triples: int = 500,
     verbose: bool = True,
 ) -> SieveResult:
-    """Decompose the residual across all interaction levels simultaneously.
+    """Rank residual projections across interaction levels simultaneously.
 
     After fitting a model (any stage), this function answers:
       "Of the remaining residual, how much is..."
@@ -747,7 +910,9 @@ def unified_residual_sieve(
 
     Each level is assessed by projecting the residual onto that level's
     feature subspace. The fractions may sum to MORE than 1 (subspaces
-    overlap at finite N), but the relative ranking is meaningful.
+    overlap at finite N), but the relative ranking is meaningful. This is an
+    exploratory model-selection heuristic, not the manuscript's FDR-controlled
+    Theorem-2 procedure.
 
     Args:
         model: fitted HiFiANOVA at any stage
@@ -767,7 +932,6 @@ def unified_residual_sieve(
     Returns:
         SieveResult with per-level fractions and recommendation
     """
-    from ..core.features import build_first_order_features, build_second_order_features
 
     x_data = jnp.asarray(x_data)
     y_data = jnp.asarray(y_data)
@@ -780,8 +944,11 @@ def unified_residual_sieve(
 
     if verbose:
         total_var_y = float(np.var(np.asarray(y_data)))
+        # Explained-variance convention (the library/manuscript default; see
+        # hifi_anova.analysis.metrics).
         r2 = 1.0 - residual_var / total_var_y if total_var_y > 0 else 0.0
-        print(f"Residual sieve (R² = {r2:.4f}, residual var = {residual_var:.4f}):")
+        print(f"Residual sieve (R²[expl-var] = {r2:.4f}, "
+              f"residual var = {residual_var:.4f}):")
 
     if residual_var < 1e-15:
         return SieveResult(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -798,27 +965,27 @@ def unified_residual_sieve(
     top_pairs = []
     if scan_pairs:
         scan_2nd = scan_missing_pairs(model, x_data, y_data, K2=K2,
-                                       significance_threshold=0.0, verbose=False)
+                                       flag_threshold=0.0, verbose=False)
         frac_2nd = scan_2nd.total_captured_by_missing
         top_pairs = scan_2nd.ranked_pairs[:5]
         if verbose:
-            n_sig = sum(1 for _, s in scan_2nd.ranked_pairs if s > 0.005)
+            n_flagged = sum(1 for _, s in scan_2nd.ranked_pairs if s > 0.005)
             print(f"  Second-order ({scan_2nd.n_scanned} pairs): "
-                  f"{frac_2nd:.1%} total, {n_sig} significant")
+                  f"{frac_2nd:.1%} total, {n_flagged} flagged above threshold")
 
     # --- Third-order: scan missing triples ---
     frac_3rd = 0.0
     top_triples = []
     if scan_triples and D >= 3:
         scan_3rd = scan_missing_triples(model, x_data, y_data, K3=K3,
-                                          significance_threshold=0.0,
+                                          flag_threshold=0.0,
                                           max_triples=max_triples, verbose=False)
         frac_3rd = sum(scan_3rd['triple_scores'].values())
         top_triples = scan_3rd['ranked_triples'][:5]
         if verbose:
-            n_sig = sum(1 for _, s in scan_3rd['ranked_triples'] if s > 0.005)
+            n_flagged = sum(1 for _, s in scan_3rd['ranked_triples'] if s > 0.005)
             print(f"  Third-order ({scan_3rd['n_scanned']} triples): "
-                  f"{frac_3rd:.1%} total, {n_sig} significant")
+                  f"{frac_3rd:.1%} total, {n_flagged} flagged above threshold")
 
     # --- Smooth residual (RBF): how much can RBF capture? ---
     frac_rbf = 0.0
@@ -881,16 +1048,18 @@ def auto_decide_stages(
     model,
     x_data: jnp.ndarray,
     y_data: jnp.ndarray,
-    significance_threshold: float = 0.05,
+    flag_threshold=_ALIAS_UNSET,
     max_order: int = 3,
     allow_residual: bool = True,
     K3: int = 1,
     verbose: bool = True,
+    *,
+    significance_threshold=_ALIAS_UNSET,
 ) -> Dict:
-    """Use the residual sieve to decide which stages/orders to add.
+    """Use the heuristic residual sieve to decide which stages/orders to add.
 
-    Replaces the simple `auto_threshold` heuristic with a principled,
-    data-driven decision based on where the residual variance actually lives.
+    This data-driven ranking is model selection, not a calibrated test or the
+    manuscript's FDR-controlled Theorem-2 procedure.
 
     Logic:
       1. Run unified sieve on current model
@@ -904,7 +1073,8 @@ def auto_decide_stages(
         model: fitted HiFiANOVA at current stage
         x_data: (N, D) training data
         y_data: (N,) targets
-        significance_threshold: minimum fraction to trigger adding a stage
+        flag_threshold: minimum fraction to trigger adding a stage
+        significance_threshold: deprecated alias for ``flag_threshold``
         max_order: highest interaction order to consider (2 or 3)
         allow_residual: whether to recommend RBF residual
         K3: harmonic for triple scanning
@@ -916,6 +1086,9 @@ def auto_decide_stages(
           stages_to_add: list of stage recommendations
           recommended_config: dict of config keys to set
     """
+    flag_threshold = _resolve_flag_threshold(
+        flag_threshold, significance_threshold, 0.05)
+
     sieve = unified_residual_sieve(
         model, x_data, y_data,
         scan_triples=(max_order >= 3),
@@ -926,7 +1099,7 @@ def auto_decide_stages(
 
     stages = []
     config = {}
-    thr = significance_threshold
+    thr = flag_threshold
 
     if sieve.first_order_fraction > thr:
         stages.append('increase_K1')

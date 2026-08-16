@@ -198,7 +198,6 @@ class TestRBFResidual:
         model_no_res = HiFiANOVA(
             mean_model=mean_model,
             K1=K1, K2=0, K3=0, Kh=0, D=D,
-            G1=np.array(G1),
         )
         sobol_no_res = compute_sobol_indices(model_no_res)
 
@@ -216,7 +215,6 @@ class TestRBFResidual:
             mean_model=mean_model,
             residual_net=rbf_fitted,
             K1=K1, K2=0, K3=0, Kh=0, D=D,
-            G1=np.array(G1),
         )
         sobol_with_res = compute_sobol_indices(model_with_res, self.x)
 

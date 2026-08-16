@@ -7,7 +7,7 @@ The residual (NN or linear) is NOT part of this class.
 """
 
 import jax
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 import equinox as eqx
 
 from ..core.features import basis_size
@@ -38,6 +38,11 @@ class MeanModel(eqx.Module):
     var_specs: tuple = eqx.field(static=True, default=None)
     # Second-order mixed block info: tuple of (i, j, Bi, Bj, block_size, offset)
     pair_block_info: tuple = eqx.field(static=True, default=None)
+    # Per-pair second-order harmonic order (uniform basis family): tuple of P
+    # ints aligned with pair_indices. None = one shared K2 (backward
+    # compatible). When set, pair_block_info carries the ragged layout and K2
+    # holds max(pair_k2) so scalar K2>0 predicates still fire.
+    pair_k2: tuple = eqx.field(static=True, default=None)
 
     def predict(self, phi1: jnp.ndarray, phi2: jnp.ndarray = None,
                 phi3: jnp.ndarray = None) -> jnp.ndarray:
@@ -87,8 +92,17 @@ class MeanModel(eqx.Module):
         return self.w2[p * block: (p + 1) * block]
 
     def get_pair_gram(self, p: int) -> jnp.ndarray:
-        """Get the Gram matrix for pair p (mixed: G_i ⊗ G_j; uniform: G₁ ⊗ G₁)."""
+        """Get the Gram matrix for pair p.
+
+        Per-pair K2 (uniform basis): G(K2_p) ⊗ G(K2_p) at that pair's own
+        order. Mixed per-variable basis: G_i ⊗ G_j from the two variables'
+        own bases. Uniform: the shared G₁(K2) ⊗ G₁(K2).
+        """
         from ..core.gram import build_gram_matrix, build_gram_matrix_2d
+        pair_k2 = getattr(self, 'pair_k2', None)
+        if pair_k2 is not None:
+            return build_gram_matrix_2d(build_gram_matrix(
+                int(pair_k2[p]), self.include_linear_2, self.basis_name))
         if self.pair_block_info is not None:
             vi, vj, Bi, Bj, _, _ = self.pair_block_info[p]
             Gi = self.get_var_gram(vi)
@@ -98,6 +112,17 @@ class MeanModel(eqx.Module):
             build_gram_matrix(self.K2, self.include_linear_2, self.basis_name))
 
     def get_coefficients_for_triple(self, t: int) -> jnp.ndarray:
-        """Slice of w3 for triple t."""
+        """Slice of w3 for triple t.
+
+        Uniform-basis only: the slicing assumes every triple block has size
+        basis_size(K3)**3. Mixed per-variable bases would need per-triple
+        block sizes/offsets (like pair_block_info), so they are rejected here
+        rather than silently returning wrong slices.
+        """
+        if self.var_specs is not None:
+            raise NotImplementedError(
+                "get_coefficients_for_triple assumes uniform third-order "
+                "block sizes; mixed per-variable bases do not support "
+                "third-order terms.")
         block = basis_size(self.K3, self.include_linear_3, self.basis_name) ** 3
         return self.w3[t * block: (t + 1) * block]

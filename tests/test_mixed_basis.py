@@ -219,7 +219,6 @@ class TestMixedSobol:
         model = HiFiANOVA(
             mean_model=mean_model,
             K1=0, K2=0, K3=0, Kh=0, D=2,
-            G1=np.array(G_leg),
             basis_name='mixed', var_specs=var_specs,
         )
 
@@ -365,3 +364,135 @@ class TestMixedTrainer:
         assert mean.shape == (50,)
         assert var.shape == (50,)
         assert jnp.all(jnp.isfinite(mean))
+
+
+class TestMixedUnsupportedGuards:
+    """The mixed per-variable path implements Stage A + B only; requesting a
+    residual (C), heteroscedastic variance (D), or K3>0 used to be silently
+    dropped (a mean-only model was returned). It must now raise instead."""
+
+    BPV = {0: {'basis': 'legendre', 'K': 3},
+           1: {'basis': 'fourier', 'K': 2},
+           2: {'basis': 'haar', 'K': 2}}
+
+    def _data(self):
+        np.random.seed(0)
+        x = jnp.array(np.random.uniform(0, 1, (300, 3)))
+        y = jnp.array(x[:, 0] + 0.1 * np.random.randn(300))
+        return x, y
+
+    @pytest.mark.parametrize("bad", [
+        {'stages': ['A', 'B', 'C']},
+        {'stages': ['A', 'B', 'D']},
+        {'stages': ['A', 'B'], 'residual': {'type': 'rbf', 'n_centers': 20}},
+        {'stages': ['A', 'B'], 'K3': 2},
+    ])
+    def test_unsupported_combo_raises(self, bad):
+        from hifi_anova.training.trainer import HiFiANOVATrainer
+        x, y = self._data()
+        config = {'K2': 2, 'lambda_order1': 0.01, 'lambda_order2': 0.01,
+                  'basis_per_variable': self.BPV, **bad}
+        trainer = HiFiANOVATrainer(config)
+        with pytest.raises(NotImplementedError, match="mixed"):
+            trainer.fit(x[60:], y[60:], x[:60], y[:60])
+
+    def test_supported_AB_still_fits(self):
+        """The A+B mixed path is unaffected by the guard."""
+        from hifi_anova.training.trainer import HiFiANOVATrainer
+        x, y = self._data()
+        config = {'stages': ['A', 'B'], 'K2': 2, 'lambda_order1': 0.01,
+                  'lambda_order2': 0.01, 'basis_per_variable': self.BPV}
+        model, results = HiFiANOVATrainer(config).fit(
+            x[60:], y[60:], x[:60], y[:60])
+        assert model.is_mixed
+        assert 'stage_B' in results
+
+
+class TestMixedCapabilityFencing:
+    """Selection/pruning/pair controls are not implemented on the mixed path; a
+    non-neutral value must raise (DEC-045) rather than silently no-op."""
+
+    BPV = {0: {'basis': 'legendre', 'K': 3},
+           1: {'basis': 'fourier', 'K': 2},
+           2: {'basis': 'haar', 'K': 2}}
+
+    def _data(self):
+        np.random.seed(0)
+        x = jnp.array(np.random.uniform(0, 1, (300, 3)))
+        y = jnp.array(x[:, 0] + 0.1 * np.random.randn(300))
+        return x, y
+
+    def _fit(self, extra):
+        from hifi_anova.training.trainer import HiFiANOVATrainer
+        x, y = self._data()
+        config = {'stages': ['A', 'B'], 'K2': 2, 'lambda_order1': 0.01,
+                  'lambda_order2': 0.01, 'basis_per_variable': self.BPV, **extra}
+        return HiFiANOVATrainer(config).fit(x[60:], y[60:], x[:60], y[:60])
+
+    @pytest.mark.parametrize("extra,option", [
+        ({'variable_selection': 'bic'}, 'variable_selection'),
+        ({'variable_selection': 'group_lasso'}, 'variable_selection'),
+        ({'pair_candidates': 'either'}, 'pair_candidates'),
+        ({'pair_selection': 'bic'}, 'pair_selection'),
+        ({'max_pair_variables': 2}, 'max_pair_variables'),
+        ({'pair_pruning': 'bic'}, 'pair_pruning'),
+        ({'first_order_pruning': 'bic'}, 'first_order_pruning'),
+    ])
+    def test_nonneutral_control_raises_naming_option_and_neutral(self, extra, option):
+        with pytest.raises(NotImplementedError) as ei:
+            self._fit(extra)
+        msg = str(ei.value)
+        assert option in msg           # names the offending option
+        assert 'neutral' in msg        # states the neutral value + alternative
+        assert 'uniform basis' in msg  # names the supported alternative
+
+    @pytest.mark.parametrize("extra", [
+        {'variable_selection': None},
+        {'pair_candidates': None},
+        {'pair_pruning': 'none'},
+        {'first_order_pruning': 'none'},
+    ])
+    def test_neutral_values_pass(self, extra):
+        model, results = self._fit(extra)
+        assert model.is_mixed
+        assert results['mixed_capability']['selection_applied'] is False
+
+
+class TestMixedK2Zero:
+    """K2=0 disables pair interactions on the mixed path (first-order/additive),
+    matching the uniform path and the P_1 estimand (DEC-045)."""
+
+    BPV = {0: {'basis': 'legendre', 'K': 3},
+           1: {'basis': 'fourier', 'K': 2},
+           2: {'basis': 'haar', 'K': 2}}
+
+    def _fit(self, K2, stages=('A', 'B')):
+        from hifi_anova.training.trainer import HiFiANOVATrainer
+        np.random.seed(0)
+        x = jnp.array(np.random.uniform(0, 1, (300, 3)))
+        y = jnp.array(x[:, 0] + 0.1 * np.random.randn(300))
+        config = {'stages': list(stages), 'K2': K2, 'lambda_order1': 0.01,
+                  'lambda_order2': 0.01, 'basis_per_variable': self.BPV}
+        return HiFiANOVATrainer(config).fit(x[60:], y[60:], x[:60], y[:60])
+
+    def test_k2_zero_produces_no_pairs(self):
+        model, results = self._fit(K2=0)
+        assert model.pair_indices is None
+        assert int(model.mean_model.w2.size) == 0
+        assert 'stage_B' not in results          # no pair result block
+        # fitted-design record carries no second-order groups
+        rec = results['fitted_design']
+        n_pairs = sum(1 for g in (rec.sobol_groups or []) if g[0] == 2)
+        assert n_pairs == 0
+        cap = results['mixed_capability']
+        assert cap['stages'] == ['A']
+        assert cap['pairs'] == 'none'
+        assert cap['stage_b_requested'] is True
+        assert cap['stage_b_fitted'] is False
+
+    def test_k2_positive_still_fits_pairs(self):
+        model, results = self._fit(K2=2)
+        assert model.pair_indices is not None
+        assert int(model.mean_model.w2.size) > 0
+        assert 'stage_B' in results
+        assert results['mixed_capability']['pairs'] == 'all'

@@ -175,8 +175,12 @@ class TestPredictionIntervals:
                                     Phi_train=Phi, reg_diag=reg, sigma2_hat=0.1)
         # Epistemic should be non-zero
         assert np.any(result['var_epistemic'] > 0)
-        # With epistemic, intervals should be wider
-        result_no_ep = predict_intervals(model, data['x_test'][:10])
+        # With epistemic, intervals should be wider — holding the aleatoric term
+        # FIXED (same sigma2_hat) so the comparison isolates the epistemic effect.
+        # (Dropping sigma2_hat here would instead fall back to the neutral unit
+        # aleatoric variance and compare two different noise levels.)
+        result_no_ep = predict_intervals(model, data['x_test'][:10],
+                                         sigma2_hat=0.1)
         widths_with = result['upper'] - result['lower']
         widths_without = result_no_ep['upper'] - result_no_ep['lower']
         assert np.mean(widths_with) >= np.mean(widths_without) - 1e-6

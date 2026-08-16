@@ -138,6 +138,35 @@ class TestDualPathEquivalence:
         assert active_sobol > 0.5, (
             f"Active variables should dominate, got {active_sobol:.3f}")
 
+    def test_unpenalized_intercept_matches_primal(self):
+        """F > N with an UNPENALIZED augmented-intercept column (reg[0] = 0).
+
+        The Woodbury dual forms R^{-1}; a zero penalty entry is undefined there
+        and the old cap (reg_inv = 1/(reg_max*1e-15)) scaled that column by
+        ~1e15, ill-conditioning K and returning a materially wrong solution
+        (~1e-2 coefficient error) while the primal system stayed well
+        conditioned. The solver must fall back to the primal here.
+        """
+        np.random.seed(0)
+        N, Ffeat = 40, 120
+        Phi = np.random.randn(N, Ffeat)
+        Z = np.concatenate([np.ones((N, 1)), Phi], axis=1)  # F = 121 > N = 40
+        y = np.random.randn(N) + 2.0                        # intercept matters
+
+        reg = np.concatenate([[0.0], np.full(Ffeat, 0.01)])  # intercept free
+        assert Z.shape[1] > N, "Need F > N to exercise the dual dispatch"
+
+        w = np.asarray(
+            weighted_ridge_solve(jnp.array(Z), jnp.array(y), jnp.array(reg)))
+
+        # Exact primal reference (A is PD: the data term covers the intercept).
+        A = Z.T @ Z + np.diag(reg)
+        w_primal = np.linalg.solve(A, Z.T @ y)
+
+        np.testing.assert_allclose(
+            w, w_primal, rtol=1e-6, atol=1e-8,
+            err_msg="Unpenalized-intercept F>N solve must match exact primal")
+
     def test_weighted_dual_path(self):
         """Weighted ridge in dual form should also work correctly."""
         np.random.seed(42)

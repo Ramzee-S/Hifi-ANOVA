@@ -33,7 +33,7 @@ def plot_components(
         ncols: columns in subplot grid
     """
     import jax.numpy as jnp
-    from ..core.features import build_per_variable_basis
+    from ...core.features import build_per_variable_basis
     apply_style()
 
     D = model.D
@@ -93,9 +93,22 @@ def plot_frequency_content(
 
     Uses analytic Gram: Var contributed by basis function j of variable i
     equals w_{i,j}^2 (since G1 is diagonal for the canonical Fourier basis).
+
+    Fourier-only: the ``2K1+1`` linear/cos/sin block layout and the notion of
+    "frequency content" are specific to the Fourier basis. For Legendre/Haar
+    models raise a clear error rather than mislabel the coefficients.
     """
-    from ..core.gram import build_gram_matrix
+    from ...core.gram import build_gram_matrix
     apply_style()
+
+    basis_name = getattr(model, 'basis_name', 'fourier')
+    if basis_name != 'fourier':
+        raise ValueError(
+            f"plot_frequency_content requires a Fourier model; got "
+            f"basis_name={basis_name!r}. Frequency content (linear/cos/sin "
+            f"per-harmonic breakdown) is only defined for the Fourier basis. "
+            f"Use plot_components() for a basis-agnostic component view."
+        )
 
     D = model.D
     K1 = model.K1
@@ -195,7 +208,7 @@ def plot_projection_matrix(
     ax.set_yticklabels(variable_names)
     ax.set_title('Interaction discovery: per-pair projection scores')
 
-    # Annotate significant cells
+    # Annotate cells above the display threshold
     for (i, j), score in discovery_result.pair_scores.items():
         if score > 0.005:
             ax.text(j, i, f'{score:.3f}', ha='center', va='center',
@@ -227,8 +240,8 @@ def plot_components_with_ci(
     """
     import jax.numpy as jnp
     from scipy.stats import norm as sp_norm
-    from ..core.features import build_per_variable_basis
-    from .automl import sandwich_covariance, ridge_analytics
+    from ...core.features import build_per_variable_basis
+    from ..automl import sandwich_covariance, ridge_analytics
     apply_style()
 
     D = model.D
@@ -244,7 +257,7 @@ def plot_components_with_ci(
     analytics = ridge_analytics(Phi, y, reg_diag)
     Cov_w = sandwich_covariance(Phi, analytics['A_inv'], analytics['residuals'])
 
-    from ..core.features import basis_size
+    from ...core.features import basis_size
     block = basis_size(K1, incl_lin, basis_name)
     z_crit = sp_norm.ppf(1 - alpha / 2)
 
@@ -320,13 +333,13 @@ def plot_basis_ternary(
 
     # Ternary coordinates -> 2D cartesian
     # Vertices: Polynomial=(0,0), Oscillatory=(1,0), Localized=(0.5, sqrt(3)/2)
-    def ternary_to_xy(p, o, l):
-        total = p + o + l
+    def ternary_to_xy(p, o, loc):
+        total = p + o + loc
         if total < 1e-15:
             return 0.33, 0.33 * np.sqrt(3) / 2
-        p, o, l = p / total, o / total, l / total
-        x = o + l * 0.5
-        y = l * np.sqrt(3) / 2
+        p, o, loc = p / total, o / total, loc / total
+        x = o + loc * 0.5
+        y = loc * np.sqrt(3) / 2
         return x, y
 
     fig, ax = plt.subplots(figsize=figsize)
@@ -364,11 +377,11 @@ def plot_basis_ternary(
         info = per_var[i]
         p = info.get('poly_fraction', 0)
         o = info.get('osc_fraction', 0)
-        l = info.get('local_fraction', 0)
+        loc = info.get('local_fraction', 0)
         share = info.get('share_of_total', 0.01)
         char = info.get('character', 'mixed')
 
-        x, y = ternary_to_xy(p, o, l)
+        x, y = ternary_to_xy(p, o, loc)
         size = max(30, min(500, share * 3000))
 
         ax.scatter(x, y, s=size, color=char_colors.get(char, '#AAAAAA'),

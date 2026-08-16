@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Tuple
 
 from ._common import PALETTE, apply_style, _var_color
+from ..._result_aliases import canonical_result_mapping as _canonical_result_mapping
 
 
 # ============================================================================
@@ -83,7 +84,7 @@ def plot_sobol_ci_bars(
 
 
 # ============================================================================
-# 3. Dual Sobol spectrum (mean vs variance sensitivity)
+# 3. Dual Sobol spectrum (mean vs log-variance sensitivity)
 # ============================================================================
 
 def plot_dual_sobol(
@@ -91,15 +92,17 @@ def plot_dual_sobol(
     variable_names: Optional[List[str]] = None,
     figsize: Tuple[float, float] = (10, 5),
 ) -> Tuple[plt.Figure, plt.Axes]:
-    """Paired bar chart: mean S_i^f (blue) vs variance S_i^h (red)."""
+    """Paired bars: mean S_i^f vs log-variance S_i^h."""
+    sobol_results = _canonical_result_mapping(
+        sobol_results, warn_legacy=True)
     apply_style()
     mean_first = sobol_results['mean_sobol']['first_order']
     D = len(mean_first)
     if variable_names is None:
         variable_names = [f"$x_{{{i+1}}}$" for i in range(D)]
 
-    has_variance = 'variance_sobol' in sobol_results
-    var_first = (sobol_results['variance_sobol']['first_order']
+    has_variance = 'log_variance_sobol' in sobol_results
+    var_first = (sobol_results['log_variance_sobol']['first_order']
                  if has_variance else {i: 0.0 for i in range(D)})
 
     # Sort by total = mean + variance
@@ -120,12 +123,12 @@ def plot_dual_sobol(
            linewidth=0.5)
     if has_variance:
         ax.bar(x_pos + width / 2, var_vals, width, color=PALETTE['var_sobol'],
-               alpha=0.85, label=r'Variance sensitivity $S_i^h$',
+               alpha=0.85, label=r'Log-variance index $S_i^h$',
                edgecolor='white', linewidth=0.5)
     ax.set_xticks(x_pos)
     ax.set_xticklabels(names, rotation=45, ha='right')
     ax.set_ylabel('Sobol index')
-    ax.set_title('Dual Sobol spectrum: mean vs variance sensitivity')
+    ax.set_title('Dual spectrum: mean vs log-variance index')
     ax.legend()
 
     fig.tight_layout()
@@ -133,7 +136,7 @@ def plot_dual_sobol(
 
 
 # ============================================================================
-# 3b. Dual-sensitivity ellipses (mean vs variance, per variable)
+# 3b. Dual-sensitivity ellipses (mean vs log variance, per variable)
 # ============================================================================
 
 def plot_sensitivity_ellipses(
@@ -147,32 +150,35 @@ def plot_sensitivity_ellipses(
     ci_scale: float = 1.0,
     figsize: Optional[Tuple[float, float]] = None,
 ) -> Tuple[plt.Figure, plt.Axes]:
-    """Dual (mean vs variance) Sobol spectrum as one ellipse per variable.
+    """Dual mean/log-variance spectrum as one ellipse per variable.
 
     Two views of the idea that every variable carries a *pair* of sensitivities
-    — one for the mean E[y|x], one for the variance Var[y|x]:
+    — one for the mean E[y|x], one for fitted log-residual scale h(x):
 
     ``mode='glyph'`` (default) — one ellipse per variable, its **width** the
-        mean sensitivity ``S_i^f`` and its **height** the variance sensitivity
+        mean sensitivity ``S_i^f`` and its **height** the log-variance index
         ``S_i^h``. Shape is the message: wide/flat = mean driver, tall/narrow =
-        variance driver, circular = balanced dual-role variable.
+        multiplicative residual-scale driver, circular = balanced dual-role.
 
     ``mode='plane'`` — the quantitative scatter, each variable at
         ``(S_i^f, S_i^h)``. Bottom-right = mean drivers, top-left = hidden
-        variance drivers, top-right = dual-role. With ``mean_ci``/``var_ci``
+        log-residual-scale drivers, top-right = dual-role. With
+        ``mean_ci``/``var_ci``
         (dicts ``{i: (lo, hi)}``) each marker becomes a CI ellipse, magnified by
         ``ci_scale`` (stated in the legend) for visibility.
 
     Returns (fig, ax), following the module convention (use ``save_fig`` to write).
     """
+    sobol_results = _canonical_result_mapping(
+        sobol_results, warn_legacy=True)
     apply_style()
     mean_first = sobol_results['mean_sobol'][use]
     D = len(mean_first)
     if variable_names is None:
         variable_names = [f"$x_{{{i+1}}}$" for i in range(D)]
 
-    has_var = 'variance_sobol' in sobol_results
-    var_first = (sobol_results['variance_sobol'][use] if has_var
+    has_var = 'log_variance_sobol' in sobol_results
+    var_first = (sobol_results['log_variance_sobol'][use] if has_var
                  else {i: 0.0 for i in range(D)})
 
     idx = sorted(range(D), key=lambda i: float(mean_first.get(i, 0))
@@ -216,10 +222,10 @@ def plot_sensitivity_ellipses(
     ax.set_yticks([])
     for sp in ('left', 'right', 'top', 'bottom'):
         ax.spines[sp].set_visible(False)
-    ax.set_title('Dual-sensitivity glyphs: mean vs variance')
+    ax.set_title('Dual-sensitivity glyphs: mean vs log variance')
     ax.text(0.5, -0.02,
             r'width $\propto$ mean sensitivity $S^f$    ·    '
-            r'height $\propto$ variance sensitivity $S^h$',
+            r'height $\propto$ log-variance index $S^h$',
             transform=ax.transAxes, ha='center', va='top', fontsize=9,
             color=PALETTE['muted'])
 
@@ -258,7 +264,7 @@ def _plot_ellipse_plane(idx, mean_first, var_first, variable_names,
             label=lbl)
     ax.text(0.97 * hi, 0.05 * hi, 'mean\ndrivers', ha='right', va='bottom',
             fontsize=8, color=PALETTE['muted'], style='italic')
-    ax.text(0.03 * hi, 0.97 * hi, 'hidden variance\ndrivers', ha='left',
+    ax.text(0.03 * hi, 0.97 * hi, 'hidden log-variance\ndrivers', ha='left',
             va='top', fontsize=8, color=PALETTE['muted'], style='italic')
     ax.text(0.97 * hi, 0.97 * hi, 'dual-role', ha='right', va='top',
             fontsize=8, color=PALETTE['muted'], style='italic')
@@ -267,8 +273,8 @@ def _plot_ellipse_plane(idx, mean_first, var_first, variable_names,
     ax.set_ylim(-0.02 * hi, hi)
     ax.set_aspect('equal')
     ax.set_xlabel(f'Mean {lvl} Sobol  $S_i^f$')
-    ax.set_ylabel(f'Variance {lvl} Sobol  $S_i^h$')
-    ax.set_title('Dual-sensitivity plane: mean vs variance')
+    ax.set_ylabel(f'Log-variance {lvl} index  $S_i^h$')
+    ax.set_title('Dual-sensitivity plane: mean vs log variance')
     ax.legend(loc='lower right')
 
     fig.tight_layout()
@@ -302,12 +308,12 @@ def plot_variance_spectrum(
     x_pos = np.arange(n)
     w = 0.55
 
-    bars1 = ax.bar(x_pos, o1, w, color=PALETTE['order1'], label='1st order')
-    bars2 = ax.bar(x_pos, o2, w, bottom=o1, color=PALETTE['order2'],
+    ax.bar(x_pos, o1, w, color=PALETTE['order1'], label='1st order')
+    ax.bar(x_pos, o2, w, bottom=o1, color=PALETTE['order2'],
                    label='2nd order')
     bot3 = [a + b for a, b in zip(o1, o2)]
     if any(v > 0 for v in o3):
-        bars3 = ax.bar(x_pos, o3, w, bottom=bot3, color=PALETTE['order3'],
+        ax.bar(x_pos, o3, w, bottom=bot3, color=PALETTE['order3'],
                        label='3rd order')
     bot4 = [a + b for a, b in zip(bot3, o3)]
     if any(v > 0 for v in res):
@@ -344,8 +350,8 @@ def plot_sobol_spectrum(
 
     If sobol_ci is provided, 95% CI whiskers are overlaid.
     """
-    from ..core.gram import build_gram_matrix
-    from ..core.features import basis_size
+    from ...core.gram import build_gram_matrix
+    from ...core.features import basis_size
     apply_style()
 
     D = model.D
@@ -690,14 +696,22 @@ def plot_structural_vs_correlative(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # 45-degree reference
-    lim = max(max(struct.values()), max(corr.values())) * 1.15
-    ax.plot([0, lim], [0, lim], '--', color=PALETTE['muted'], linewidth=1,
-            label='Perfect agreement')
+    # Axis bounds that include NEGATIVE values — correlative shares may be < 0
+    # under dependence, and fixing the axes at 0 would hide them.
+    all_vals = list(struct.values()) + list(corr.values())
+    vhi = max(all_vals + [0.0])
+    vlo = min(all_vals + [0.0])
+    pad = 0.15 * max(vhi - vlo, 1e-6)
+    hi, lo = vhi + pad, vlo - pad
 
-    # Uncertainty band around diagonal (±0.05)
-    ax.fill_between([0, lim], [0 - 0.05, lim - 0.05],
-                    [0 + 0.05, lim + 0.05],
+    # Zero reference lines (only visible/meaningful when the range spans 0).
+    ax.axhline(0, color=PALETTE['muted'], linewidth=0.6, alpha=0.5)
+    ax.axvline(0, color=PALETTE['muted'], linewidth=0.6, alpha=0.5)
+
+    # 45-degree reference + uncertainty band around the diagonal (±0.05)
+    ax.plot([lo, hi], [lo, hi], '--', color=PALETTE['muted'], linewidth=1,
+            label='Perfect agreement')
+    ax.fill_between([lo, hi], [lo - 0.05, hi - 0.05], [lo + 0.05, hi + 0.05],
                     alpha=0.08, color=PALETTE['muted'])
 
     for i in sorted(struct.keys()):
@@ -712,19 +726,30 @@ def plot_structural_vs_correlative(
         ax.annotate(name, (s, c), fontsize=8, ha='left',
                     xytext=(5, 3), textcoords='offset points')
 
-    ax.set_xlabel('Structural Sobol $S_i$ (independence-assuming)')
-    ax.set_ylabel('Correlative Sobol $S_i^{\\mathrm{corr}}$ (data-aware)')
-    ax.set_xlim(0, lim)
-    ax.set_ylim(0, lim)
+    ax.set_xlabel('Structural first-order $S_i$ (independence-assuming)')
+    ax.set_ylabel('Correlative first-order $S_i^{\\mathrm{corr}}$ (data-aware)')
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
     ax.set_aspect('equal')
-    level = correlation_diag.get('correlation_level', '?')
-    ax.set_title(f'Structural vs correlative Sobol (correlation: {level})')
+    level = correlation_diag.get('dependence_level',
+                                 correlation_diag.get('correlation_level', '?'))
+    ax.set_title(f'Structural vs correlative first-order Sobol (dependence: {level})')
     ax.legend(loc='upper left')
 
-    # Summary stats
-    text = (f"Sum structural: {correlation_diag.get('sum_structural', 0):.3f}\n"
-            f"Sum correlative: {correlation_diag.get('sum_correlative', 0):.3f}\n"
+    # Summary stats. Compare LIKE WITH LIKE: both first-order sums. When the
+    # model retains interactions, both are PARTIAL collections (need not sum to
+    # 1); the complete all-order correlative sum is shown separately.
+    has_ho = correlation_diag.get('has_higher_order', False)
+    tag = ' (1st-order, partial)' if has_ho else ' (1st-order)'
+    sum_corr_fo = correlation_diag.get(
+        'sum_correlative_first_order',
+        correlation_diag.get('sum_correlative', 0.0))
+    text = (f"Σ structural{tag}: {correlation_diag.get('sum_structural', 0):.3f}\n"
+            f"Σ correlative{tag}: {sum_corr_fo:.3f}\n"
             f"Max divergence: {correlation_diag.get('max_divergence', 0):.3f}")
+    if has_ho:
+        text += ("\nΣ correlative (all orders): "
+                 f"{correlation_diag.get('sum_correlative', 0):.3f}")
     ax.text(0.98, 0.02, text, transform=ax.transAxes, fontsize=7,
             va='bottom', ha='right',
             bbox=dict(boxstyle='round,pad=0.3', facecolor='lightyellow',
@@ -770,7 +795,7 @@ def plot_order_decomposition(
         (sum(third.values()), '3rd order', PALETTE['order3']),
         (residual_frac, 'Residual', PALETTE['residual']),
     ]
-    parts = [(v, l, c) for v, l, c in parts if v > 0.001]
+    parts = [(v, lbl, c) for v, lbl, c in parts if v > 0.001]
     cumulative = 0
     for val, lbl, col in parts:
         ax.bar(0, val, bottom=cumulative, color=col, width=0.6,
@@ -780,7 +805,8 @@ def plot_order_decomposition(
                     ha='center', va='center', fontsize=8, fontweight='bold',
                     color='white')
         cumulative += val
-    ax.set_xlim(-0.5, 0.5); ax.set_xticks([])
+    ax.set_xlim(-0.5, 0.5)
+    ax.set_xticks([])
     ax.set_ylim(0, max(cumulative * 1.05, 1.0))
     ax.set_ylabel('Fraction of total model variance')
     ax.set_title('(a) By order', loc='left', fontweight='bold')

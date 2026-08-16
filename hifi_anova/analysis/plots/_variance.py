@@ -27,7 +27,6 @@ def plot_variance_sunburst(
     The visual weight of each slice is proportional to its Sobol index.
     """
     apply_style()
-    va = sobol_results.get('variance_accounting', {})
     first = sobol_results['mean_sobol']['first_order']
     second = sobol_results['mean_sobol'].get('second_order', {})
     third = sobol_results['mean_sobol'].get('third_order', {})
@@ -54,10 +53,10 @@ def plot_variance_sunburst(
 
     # Remove zero-width slices
     inner_vals, inner_labels, inner_colors = [], [], []
-    for v, l, c in zip(order_vals, order_labels, order_colors):
+    for v, lbl, c in zip(order_vals, order_labels, order_colors):
         if v > 0.001:
             inner_vals.append(v)
-            inner_labels.append(l)
+            inner_labels.append(lbl)
             inner_colors.append(c)
 
     # --- Outer ring: individual components ---
@@ -132,7 +131,7 @@ def plot_variance_sunburst(
         startangle=90, counterclock=False)
 
     # Outer donut
-    outer_colors_faded = [c + 'CC' if len(c) == 7 else c
+    [c + 'CC' if len(c) == 7 else c
                           for c in outer_colors]
     wedges2, texts2 = ax.pie(
         outer_vals, labels=None, colors=outer_colors, radius=1.05,
@@ -266,7 +265,8 @@ def plot_variance_treemap(
                     label=order_labels_map.get(order, ''))
             shown_orders.add(order)
 
-    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
     ax.axis('off')
     ax.legend(loc='upper left', fontsize=9, framealpha=0.9)
     ax.set_title('Variance treemap: area $\\propto$ Sobol index',

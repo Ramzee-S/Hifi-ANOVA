@@ -1,7 +1,7 @@
 """Synthetic data generators: Friedman-1, Ishigami, and heteroscedastic variants."""
 
 import numpy as np
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 
 def generate_friedman1(n_samples: int = 10000, noise_std: float = 0.1,
@@ -54,7 +54,7 @@ def generate_heteroscedastic(n_samples: int = 10000,
     Variance: sigma^2(x) = (0.5 + 2*x_{noise_variable})^2
 
     The variance depends on one variable, providing a known ground truth
-    for the variance Sobol indices.
+    for the log-variance indices S^h.
 
     Args:
         n_samples: number of samples
@@ -121,6 +121,69 @@ def ishigami_sobol_indices(a: float = 7.0, b: float = 0.1) -> Dict:
     }
 
 
+def friedman1_sobol_indices(n_quad: int = 64) -> Dict:
+    """Exact Sobol indices for Friedman-1, computed to quadrature precision.
+
+    Ground truth for ``generate_friedman1``. The function on ``x ~ U[0,1]^d`` is
+
+        f(x) = 10 sin(pi x1 x2) + 20 (x3 - 1/2)^2 + 10 x4 + 5 x5
+
+    (x6.. are inert). The four terms depend on disjoint variable sets, so the
+    total variance is the sum of their variances. Closed forms are used where
+    available; the ``sin(pi x1 x2)`` term (the only interaction) is integrated
+    by tensor Gauss-Legendre quadrature, which is exact to machine precision for
+    this smooth integrand.
+
+    Component variances (uniform measure on the cube):
+
+        Var(20 (x3-1/2)^2) = 400 (1/80 - 1/144) = 20/9
+        Var(10 x4)         = 100/12 ,   Var(5 x5) = 25/12
+        Var(10 sin(pi x1 x2)) = E[.^2] - E[.]^2        (2-D quadrature)
+        V1 = Var_{x1}( E_{x2}[10 sin(pi x1 x2)] ) = V2   (main effects, 1-D)
+        V12 = Var(10 sin(pi x1 x2)) - V1 - V2            (the (x1,x2) interaction)
+
+    This replaces the approximate literature/SALib values: the exact first-order
+    indices are S1=S2=0.19731, S3=0.09327, S4=0.34975, S5=0.08744 and the
+    closed pair S12=0.07492 (they sum to 1 with the inert variables at 0).
+
+    Args:
+        n_quad: Gauss-Legendre nodes per axis (64 is already machine-exact here).
+
+    Returns:
+        dict with 'first_order' {i: S_i} for i=0..4 (inert 5..9 omitted; == 0),
+        'second_order' {(0, 1): S_12}, 'partial_variances', and 'total_variance'.
+    """
+    nodes, w = np.polynomial.legendre.leggauss(n_quad)
+    x = 0.5 * (nodes + 1.0)                    # map [-1,1] -> [0,1]
+    wq = 0.5 * w                               # quadrature weights on [0,1]
+
+    # Interaction term A = 10 sin(pi x1 x2): 2-D tensor quadrature.
+    X1, X2 = np.meshgrid(x, x, indexing='ij')
+    W = np.outer(wq, wq)
+    A = 10.0 * np.sin(np.pi * X1 * X2)
+    EA = float(np.sum(W * A))
+    EA2 = float(np.sum(W * A * A))
+    var_A = EA2 - EA ** 2
+    h1 = (A * wq[None, :]).sum(axis=1)         # E_{x2}[A] as a function of x1
+    V1 = float(np.sum(wq * (h1 - EA) ** 2))    # first-order (main) effect of x1
+    V2 = V1                                    # symmetric in x1, x2
+    V12 = var_A - V1 - V2                       # the (x1, x2) interaction
+
+    # Additive univariate terms (closed form).
+    V3 = 400.0 * (1.0 / 80.0 - 1.0 / 144.0)    # Var(20 (x3-1/2)^2) = 20/9
+    V4 = 100.0 / 12.0                          # Var(10 x4)
+    V5 = 25.0 / 12.0                           # Var(5 x5)
+
+    D = var_A + V3 + V4 + V5                   # total variance
+    return {
+        'first_order': {0: V1 / D, 1: V2 / D, 2: V3 / D, 3: V4 / D, 4: V5 / D},
+        'second_order': {(0, 1): V12 / D},
+        'partial_variances': {'V1': V1, 'V2': V2, 'V3': V3, 'V4': V4, 'V5': V5,
+                              'V12': V12},
+        'total_variance': D,
+    }
+
+
 def generate_ishigami(n_samples: int = 10000,
                       a: float = 7.0, b: float = 0.1,
                       noise_std: float = 0.0,
@@ -146,7 +209,7 @@ def generate_ishigami(n_samples: int = 10000,
     variable that is first-order-silent in the mean — makes it a **hidden
     heteroscedastic driver**: invisible to mean first-order importance yet
     dominating the predictive *variance*. This is the canonical demonstration
-    for the dual mean+variance Sobol spectrum.
+    for the dual mean/log-variance spectrum.
 
     Args:
         n_samples: number of samples.

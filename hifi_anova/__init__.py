@@ -11,7 +11,7 @@ and the staged fitter is :class:`HiFiANOVATrainer`. The one-call entry point is
     result = hifi_anova(X, y)          # one-call fit -> Sobol -> intervals
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0a1"
 
 import warnings as _warnings
 
@@ -34,12 +34,19 @@ from .model.hifi_anova import HiFiANOVA
 from .training.trainer import HiFiANOVATrainer, estimate_sobol
 from .analysis.sobol import compute_sobol_indices
 from .api import hifi_anova, HiFiResult
+from .progress import HiFiCancelled
+from .config_schema import config_schema, HiFiConfig, CONFIG_SCHEMA, FieldSpec
 
 __all__ = [
     "HiFiANOVA",
     "HiFiANOVATrainer",
     "hifi_anova",
     "HiFiResult",
+    "HiFiCancelled",
+    "config_schema",
+    "HiFiConfig",
+    "CONFIG_SCHEMA",
+    "FieldSpec",
     "estimate_sobol",
     "compute_sobol_indices",
     "__version__",

@@ -23,8 +23,18 @@ from hifi_anova.analysis.diagnostics import calibration_report
 
 
 def _fit_heteroscedastic(X, y, D, K1=5, K2=0, Kh=3, lambda1=0.001,
-                         lambda2=0.01, lambda_h=0.05, n_samples=None):
-    """Helper to fit a heteroscedastic model."""
+                         lambda2=0.01, lambda_h=0.05, n_samples=None,
+                         heteroscedastic_guard=True):
+    """Helper to fit a heteroscedastic model.
+
+    ``heteroscedastic_guard=False`` keeps the raw variance fit even when the
+    DEC-028 safety guard would revert to a constant variance on held-out NLL.
+    Tests that verify the variance *model's* Sobol recovery pass this so they
+    exercise the variance fit itself rather than the guard's (deliberately
+    conservative) model-selection — which, on moderate heteroscedasticity, can
+    revert despite correct structure recovery (a known, advisor-gated Stage-D
+    calibration matter; see StageD_calibration_brief.md).
+    """
     data = preprocess_data(X, y, seed=42)
     stages = ['A', 'B', 'D'] if K2 > 0 else ['A', 'D']
     config = {
@@ -35,6 +45,7 @@ def _fit_heteroscedastic(X, y, D, K1=5, K2=0, Kh=3, lambda1=0.001,
         'lambda_h': lambda_h,
         'stages': stages,
         'residual_nn': {'enabled': False},
+        'heteroscedastic_guard': heteroscedastic_guard,
         'max_outer_iter': 10,
         'alternating_tol': 1e-4,
         'newton_max_iter': 15,
@@ -78,8 +89,8 @@ class TestT3_1_OrthogonalMeanVariance:
 
     def test_variance_sobol_x3_dominates(self):
         """x3 should dominate the variance Sobol spectrum."""
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing from results"
-        vs = self.sobol['variance_sobol']['first_order']
+        assert 'log_variance_sobol' in self.sobol
+        vs = self.sobol['log_variance_sobol']['first_order']
         s3_h = vs[2]
         # x3 should be the largest
         assert s3_h > 0.3, f"Variance S3={s3_h:.4f}, should dominate"
@@ -89,8 +100,8 @@ class TestT3_1_OrthogonalMeanVariance:
 
     def test_variance_sobol_mean_vars_small(self):
         """x1, x2 (mean drivers) should have small variance Sobol."""
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing from results"
-        vs = self.sobol['variance_sobol']['first_order']
+        assert 'log_variance_sobol' in self.sobol
+        vs = self.sobol['log_variance_sobol']['first_order']
         assert vs[0] < 0.3, f"Variance S1={vs[0]:.4f}, should be small"
         assert vs[1] < 0.3, f"Variance S2={vs[1]:.4f}, should be small"
 
@@ -104,9 +115,18 @@ class TestT3_2_SharedVariable:
     @pytest.fixture(autouse=True)
     def setup(self):
         X, y, self.gt = T3_2_shared_variable(n_samples=15000, seed=42)
+        # This dataset is genuinely heteroscedastic (sigma^2 = exp(1.5*(x1-0.5)))
+        # and the variance model recovers x1 (variance_sobol_x1 ~ 0.98). With the
+        # joint-GLS Stage-D mean now the default, the guard KEEPS the variance
+        # model on its own (no heteroscedastic_guard=False workaround needed) —
+        # this exercises the real default path, and asserting the guard keeps is
+        # the stronger test (was the false-revert the joint-GLS flip fixed).
         self.model, self.results, self.sobol, self.data = _fit_heteroscedastic(
-            X, y, D=5, K1=5, K2=3, Kh=3, lambda1=0.001, lambda2=0.005, lambda_h=0.01
+            X, y, D=5, K1=5, K2=3, Kh=3, lambda1=0.001, lambda2=0.005,
+            lambda_h=0.01
         )
+        assert self.model.variance_model is not None, \
+            "default guard should keep the variance model on genuine heteroscedastic data"
 
     def test_mean_sobol_x1_large(self):
         """x1 should have large mean Sobol (main effect + interaction)."""
@@ -116,16 +136,16 @@ class TestT3_2_SharedVariable:
 
     def test_variance_sobol_x1_large(self):
         """x1 should also dominate the variance Sobol."""
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing from results"
-        vs = self.sobol['variance_sobol']['first_order']
+        assert 'log_variance_sobol' in self.sobol
+        vs = self.sobol['log_variance_sobol']['first_order']
         s1_h = vs[0]
         assert s1_h > 0.3, f"Variance S1={s1_h:.4f}, x1 drives variance too"
 
     def test_mean_sobol_x1_and_variance_sobol_x1_both_large(self):
         """x1 should appear in BOTH mean and variance spectra (dual role)."""
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing from results"
+        assert 'log_variance_sobol' in self.sobol
         st1_mean = self.sobol['mean_sobol']['total_order'][0]
-        s1_var = self.sobol['variance_sobol']['first_order'][0]
+        s1_var = self.sobol['log_variance_sobol']['first_order'][0]
         assert st1_mean > 0.3 and s1_var > 0.2, \
             f"x1 dual role: mean={st1_mean:.3f}, var={s1_var:.3f}"
 
@@ -167,16 +187,16 @@ class TestT3_3_HiddenVariable:
 
     def test_variance_sobol_x3_large(self):
         """x3 should dominate variance Sobol."""
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing from results"
-        vs = self.sobol['variance_sobol']['first_order']
+        assert 'log_variance_sobol' in self.sobol
+        vs = self.sobol['log_variance_sobol']['first_order']
         s3_h = vs[2]
         assert s3_h > 0.2, \
             f"Variance S3={s3_h:.4f}, x3 drives uncertainty"
 
     def test_variance_sobol_x4_present(self):
         """x4 should also appear in variance Sobol (secondary driver)."""
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing from results"
-        vs = self.sobol['variance_sobol']['first_order']
+        assert 'log_variance_sobol' in self.sobol
+        vs = self.sobol['log_variance_sobol']['first_order']
         s4_h = vs[3]
         # x4 contributes via sin(2*pi*x4) with coeff 0.5
         assert s4_h > 0.05, \
@@ -188,9 +208,9 @@ class TestT3_3_HiddenVariable:
         Standard analysis (mean Sobol) would rank x3 as irrelevant.
         Variance Sobol should rank x3 as the most important uncertainty driver.
         """
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing from results"
+        assert 'log_variance_sobol' in self.sobol
         mean_s3 = self.sobol['mean_sobol']['first_order'][2]
-        var_s3 = self.sobol['variance_sobol']['first_order'][2]
+        var_s3 = self.sobol['log_variance_sobol']['first_order'][2]
         # x3 is "hidden" in mean but "revealed" in variance
         assert mean_s3 < 0.1, f"Mean says x3 unimportant: S3={mean_s3:.4f}"
         assert var_s3 > mean_s3, \
@@ -198,11 +218,11 @@ class TestT3_3_HiddenVariable:
 
     def test_irrelevant_x5_x8_small_everywhere(self):
         """x5-x8 should be small in both spectra."""
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing from results"
+        assert 'log_variance_sobol' in self.sobol
         for i in range(4, 8):
             si = self.sobol['mean_sobol']['first_order'][i]
             assert si < 0.05, f"Mean S{i+1}={si:.4f}"
-            vi = self.sobol['variance_sobol']['first_order'][i]
+            vi = self.sobol['log_variance_sobol']['first_order'][i]
             assert vi < 0.15, f"Variance S{i+1}={vi:.4f}"
 
 
@@ -264,8 +284,8 @@ class TestT3_4_InteractionNoise:
         h(x) = 8*(x3-0.5)*(x4-0.5) is a PURE interaction with no
         first-order component. All variance signal is in second order.
         """
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing"
-        vs = self.sobol['variance_sobol']['first_order']
+        assert 'log_variance_sobol' in self.sobol
+        vs = self.sobol['log_variance_sobol']['first_order']
         for i in range(6):
             si = vs[i]
             assert si < 0.05, \
@@ -277,16 +297,16 @@ class TestT3_4_InteractionNoise:
         h(x) = 8*(x3-0.5)*(x4-0.5) => variance is entirely in the
         second-order interaction between x3 and x4.
         """
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing"
-        vs2 = self.sobol['variance_sobol'].get('second_order', {})
+        assert 'log_variance_sobol' in self.sobol
+        vs2 = self.sobol['log_variance_sobol'].get('second_order', {})
         s34 = vs2.get((2, 3), 0.0)
         assert s34 > 0.5, \
             f"Variance S(3,4)={s34:.4f}, should dominate (pure interaction)"
 
     def test_variance_sobol_other_pairs_small(self):
         """Non-(x3,x4) pairs should have negligible variance Sobol."""
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing"
-        vs2 = self.sobol['variance_sobol'].get('second_order', {})
+        assert 'log_variance_sobol' in self.sobol
+        vs2 = self.sobol['log_variance_sobol'].get('second_order', {})
         for pair, val in vs2.items():
             if pair != (2, 3):
                 assert val < 0.05, \
@@ -320,16 +340,16 @@ class TestT3_5_SignalNoiseConfusion:
 
     def test_variance_sobol_x1_large(self):
         """x1 should also dominate variance Sobol (cos at same frequency)."""
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing from results"
-        vs = self.sobol['variance_sobol']['first_order']
+        assert 'log_variance_sobol' in self.sobol
+        vs = self.sobol['log_variance_sobol']['first_order']
         s1_h = vs[0]
         assert s1_h > 0.3, \
             f"Variance S1={s1_h:.4f}, x1 drives both mean and variance"
 
     def test_variance_sobol_x2_small(self):
         """x2 should NOT appear in variance Sobol."""
-        assert 'variance_sobol' in self.sobol, "variance_sobol missing from results"
-        vs = self.sobol['variance_sobol']['first_order']
+        assert 'log_variance_sobol' in self.sobol
+        vs = self.sobol['log_variance_sobol']['first_order']
         s2_h = vs[1]
         assert s2_h < 0.3, \
             f"Variance S2={s2_h:.4f}, x2 shouldn't drive variance"

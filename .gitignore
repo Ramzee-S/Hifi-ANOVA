@@ -31,6 +31,9 @@ study_results/
 revision_results/
 *.png
 *.pdf
+# Studies run outputs (studies/<name>/results/, generated report.html)
+studies/**/results/
+studies/**/report.html
 
 # Model checkpoints / saved artifacts
 *.pkl
@@ -49,6 +52,14 @@ my_model/
 
 # Working notes / scratch dumps (Claude Code transcripts, analysis dumps, etc.)
 CC_*
+
+# Local zip snapshots / backups (e.g. Theory5.zip) — not source.
+*.zip
+
+# Regenerable demonstrator datasets (seed-controlled, written by the
+# Theory/fatigue_demo scripts). Figures are already covered by *.png above; the
+# dataset csv is kept out of the repo for size — rerun the script to regenerate.
+Theory/fatigue_demo/*.csv
 
 # Manuscript / paper sources — this is a code-only release; the write-up is
 # kept out deliberately (may be added later, use `git add -f` if so).

@@ -111,7 +111,6 @@ def T1_3_linear_fourier_mix(n_samples: int = 10000, noise_std: float = 0.1,
     #     = 16/12 + 4/2 + 16*(-1/(2*pi))
     #     = 1.3333 + 2.0 - 2.5465 = 0.7869
     var1 = 16.0/12.0 + 4.0/2.0 + 2.0 * 4.0 * 2.0 * (-1.0/(2.0*np.pi))
-    total_var = var1  # only x1 is active
 
     # WRONG answer (diagonal-only): 16/12 + 4/2 = 3.333
     wrong_var = 16.0/12.0 + 4.0/2.0
@@ -175,7 +174,7 @@ def T1_5_constant_mean_variable_noise(
     D = 5
 
     All action is in the variance. Mean Sobol should be ~zero.
-    Variance Sobol: S1_h should be large.
+    Log-variance index: S1_h should be large.
     """
     rng = np.random.RandomState(seed)
     D = 5
@@ -188,7 +187,7 @@ def T1_5_constant_mean_variable_noise(
 
     # The true log-variance function h(x) = 2*(x1-0.5)
     # This is a pure linear function of x1 in our basis
-    # Variance Sobol: h depends only on x1, so S1_h = 1.0
+    # Log-variance index: h depends only on x1, so S1_h = 1.0
     ground_truth = {
         'name': 'T1.5_constant_mean_variable_noise',
         'D': D,
@@ -224,17 +223,21 @@ def T2_1_friedman1(n_samples: int = 10000, noise_std: float = 1.0,
          + 5.0 * X[:, 4])
     y = f + noise_std * rng.randn(n_samples)
 
-    # Approximate Sobol indices (from literature / SALib)
+    # Exact Sobol indices, computed to quadrature precision (single source of
+    # truth: hifi_anova.data.synthetic.friedman1_sobol_indices). Replaces the
+    # earlier approximate literature values, which were off (e.g. S4 was 0.14 vs
+    # exact 0.350, and the (x1,x2) pair was 0.24 vs exact 0.075).
+    from .synthetic import friedman1_sobol_indices
+    _exact = friedman1_sobol_indices()
+    first_order = {i: _exact['first_order'].get(i, 0.0) for i in range(D)}
     ground_truth = {
         'name': 'T2.1_friedman1',
         'D': D,
-        'mean_sobol_first_order_approx': {
-            0: 0.16, 1: 0.16, 2: 0.09, 3: 0.14, 4: 0.04,
-            5: 0.0, 6: 0.0, 7: 0.0, 8: 0.0, 9: 0.0
-        },
-        'mean_sobol_second_order_approx': {(0, 1): 0.24},
+        'mean_sobol_first_order': first_order,
+        'mean_sobol_second_order': dict(_exact['second_order']),
+        'total_variance': _exact['total_variance'],
         'noise_variance': noise_std**2,
-        'tolerance': 0.15,  # Allow 15% relative error
+        'tolerance': 0.15,  # Allow 15% relative error in recovery checks
         'description': ('f(x) = 10*sin(pi*x1*x2) + 20*(x3-0.5)^2 + 10*x4 + 5*x5. '
                        'sin(pi*x1*x2) is NOT in our basis.'),
     }
@@ -421,7 +424,7 @@ def T3_3_hidden_variable(
     var2 = 4.0 / 12.0    # 2^2 * 1/12
     total_mean = var1 + var2
 
-    # Variance Sobol (of the log-variance function h(x) = x3 + 0.5*sin(2*pi*x4) - 0.75)
+    # Log-variance index of h(x) = x3 + 0.5*sin(2*pi*x4) - 0.75
     # h depends on x3 (linear: coefficient 1 -> Var = 1/12)
     # and x4 (sin1: coefficient 0.5 -> Var = 0.25/2 = 0.125)
     var_h3 = 1.0 / 12.0
@@ -443,7 +446,7 @@ def T3_3_hidden_variable(
         'total_mean_variance': total_mean,
         'true_log_variance': 'h(x) = x3 + 0.5*sin(2*pi*x4) - 0.75',
         'showcase_message': ('Standard feature importance says x3/x4 are irrelevant. '
-                            'HiFiANOVA variance Sobol identifies them as key uncertainty drivers.'),
+                            'HiFiANOVA log-variance indices identify fitted residual-scale drivers.'),
         'description': ('f = 3*cos(2*pi*x1) + 2*(x2-0.5), '
                        'sigma^2 = exp(x3 + 0.5*sin(2*pi*x4) - 0.75)'),
     }
@@ -523,7 +526,7 @@ def T3_5_signal_noise_confusion(
     var2 = 9.0 / 2.0    # 3^2 * 1/2
     total_mean = var1 + var2
 
-    # Variance Sobol: h(x) = 2*cos(2*pi*x1), depends only on x1
+    # Log-variance index: h(x) = 2*cos(2*pi*x1), depends only on x1
     ground_truth = {
         'name': 'T3.5_signal_noise_confusion',
         'D': D,
@@ -676,10 +679,111 @@ def T4_3_tunable_snr(
         'variance_sobol_first_order': {
             i: (1.0 if i == noise_variable else 0.0) for i in range(D)
         } if beta > 0 else {i: 0.0 for i in range(D)},
-        'noise_ratio': float(np.exp(beta)),  # max/min noise ratio
-        'description': f'beta={beta}, noise varies by {np.exp(beta):.1f}x',
+        # max/min noise VARIANCE ratio e^beta (the sd ratio is e^{beta/2})
+        'noise_ratio': float(np.exp(beta)),
+        'description': (f'beta={beta}, noise variance varies by '
+                        f'{np.exp(beta):.1f}x (sd by {np.exp(beta / 2.0):.1f}x)'),
     }
     return X, y, ground_truth
+
+
+# =============================================================================
+# Classic sensitivity-analysis benchmarks (external ground truth)
+# =============================================================================
+# The Sobol G-function and a simplified Morris-like function are standard SA
+# test problems. Unlike the Tier 1-4 functions above they take an ``X`` array
+# (inputs on the unit hypercube) and return ``y`` only; their reference indices
+# are analytic (G-function) or qualitative (Morris-like: which variables are
+# active; see the morris_function docstring for its simplifications vs. the
+# genuine Morris 1991 function).
+# Ishigami lives in :mod:`hifi_anova.data.synthetic` as ``generate_ishigami`` /
+# ``ishigami_sobol_indices``.
+
+# Standard G-function importance vector (Saltelli et al.): small a => important.
+SOBOL_G_DEFAULT_A = [0.0, 1.0, 4.5, 9.0, 99.0, 99.0, 99.0, 99.0]
+
+
+def sobol_g_function(X: np.ndarray, a: Optional[np.ndarray] = None) -> np.ndarray:
+    """Sobol G-function: f(x) = prod_i (|4 x_i - 2| + a_i) / (1 + a_i).
+
+    A standard sensitivity-analysis benchmark on x_i ~ U(0, 1). The importance
+    of variable i is controlled by a_i: small a_i => important, large a_i =>
+    inactive. First-order indices are analytic — see :func:`sobol_g_sobol`.
+
+    Args:
+        X: (N, D) inputs on [0, 1].
+        a: (D,) importance vector; defaults to :data:`SOBOL_G_DEFAULT_A`[:D].
+
+    Returns:
+        y: (N,) function values.
+    """
+    D = X.shape[1]
+    if a is None:
+        a = np.array(SOBOL_G_DEFAULT_A[:D], dtype=np.float64)
+    a = np.asarray(a, dtype=np.float64)
+    result = np.ones(X.shape[0])
+    for i in range(D):
+        result *= (np.abs(4.0 * X[:, i] - 2.0) + a[i]) / (1.0 + a[i])
+    return result
+
+
+def sobol_g_sobol(D: int = 8, a: Optional[np.ndarray] = None) -> Dict:
+    """Analytic first-order Sobol indices for the G-function.
+
+    V_i = 1 / (3 (1 + a_i)^2),  V_T = prod_i (1 + V_i) - 1,  S_i = V_i / V_T.
+
+    Returns:
+        {i: S_i} for i in range(D).
+    """
+    if a is None:
+        a = np.array(SOBOL_G_DEFAULT_A[:D], dtype=np.float64)
+    a = np.asarray(a, dtype=np.float64)
+    Vi = 1.0 / (3.0 * (1.0 + a[:D]) ** 2)
+    VT = float(np.prod(1.0 + Vi) - 1.0)
+    Si = Vi / VT
+    return {i: float(Si[i]) for i in range(D)}
+
+
+def morris_function(X: np.ndarray) -> np.ndarray:
+    """SIMPLIFIED Morris-like screening function (not the full Morris 1991).
+
+    A high-dimensional qualitative screening benchmark on x_i ~ U(0, 1):
+    the first 10 variables carry strong main effects (beta=20) and pairs
+    among the first 6 carry interactions (beta_ij=-15); variables 11+ are
+    EXACTLY inert.
+
+    Deliberate simplifications vs. Morris (1991): the original also has
+    third-order (beta_ijl=-10) and fourth-order (beta_ijls=5) terms among the
+    first 4-5 variables, and weak main effects beta_i=(-1)^i for i=11..20 —
+    all dropped here. Use this function only as a qualitative
+    active-vs-inert screen; do NOT compare indices computed on it against
+    published Morris-function reference values.
+
+    Args:
+        X: (N, D) inputs on [0, 1], D >= 20.
+
+    Returns:
+        y: (N,) function values.
+    """
+    D = X.shape[1]
+    if D < 20:
+        raise ValueError(f"morris_function needs D >= 20, got D={D}")
+    w = 2.0 * (X - 0.5)
+    # x4, x6, x8 (0-indexed 3,5,7 in Morris; here matching the legacy 2,4,6)
+    for i in [2, 4, 6]:
+        if i < D:
+            w[:, i] = 2.0 * (1.1 * X[:, i] / (X[:, i] + 0.1) - 0.5)
+    beta = np.zeros(D)
+    beta[:10] = 20.0
+    beta_ij = np.zeros((D, D))
+    for i in range(min(6, D)):
+        for j in range(i + 1, min(6, D)):
+            beta_ij[i, j] = -15.0
+    y = np.sum(beta * w, axis=1)
+    for i in range(min(6, D)):
+        for j in range(i + 1, min(6, D)):
+            y += beta_ij[i, j] * w[:, i] * w[:, j]
+    return y
 
 
 # =============================================================================

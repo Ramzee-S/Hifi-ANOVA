@@ -1,7 +1,9 @@
 """Analysis: Sobol indices, diagnostics, visualization, regularization paths, AutoML analytics."""
 
 from .sobol import compute_sobol_indices, compute_correlative_sobol
-from .diagnostics import variance_accounting_report, calibration_report, correlation_diagnostic
+from .metrics import r_squared, r_squared_report
+from .diagnostics import (variance_accounting_report, calibration_report,
+                          correlation_diagnostic, independence_test)
 from .residual_diagnostics import analyze_residuals, ResidualDiagnostics
 from .reg_path import compute_reg_path, plot_reg_path, plot_pareto_frontier, RegPathResult
 from .automl import (

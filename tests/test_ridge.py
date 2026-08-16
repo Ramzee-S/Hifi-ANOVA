@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from sklearn.linear_model import Ridge
 
-from hifi_anova.training.ridge import weighted_ridge_solve
+from hifi_anova.training.ridge import weighted_ridge_solve, kfold_indices
 from hifi_anova.training.regularization import (
     build_regularization_vector, _build_second_order_reg_block
 )
@@ -265,3 +265,71 @@ class TestPerOrderStrategyDict:
             lam1, lam2)
         assert np.allclose(r_str, r_dict), \
             "String strategy should match dict with same strategy for all orders"
+
+
+class TestKFoldIndices:
+    """The shared k-fold splitter ``ridge.kfold_indices``."""
+
+    @pytest.mark.parametrize("scheme", ["strided", "contiguous"])
+    @pytest.mark.parametrize("N,k", [(20, 5), (13, 5), (100, 7), (11, 11), (6, 2)])
+    def test_partitions_all_points_exactly_once(self, scheme, N, k):
+        """Every index is held out in exactly one fold (both schemes)."""
+        folds = kfold_indices(N, k, seed=0, scheme=scheme)
+        assert len(folds) == k
+        allidx = np.concatenate(folds)
+        assert np.array_equal(np.sort(allidx), np.arange(N)), \
+            f"{scheme}: folds must partition 0..N-1 (no dropped remainder)"
+        assert len(np.unique(allidx)) == N, f"{scheme}: folds must not overlap"
+
+    @pytest.mark.parametrize("scheme", ["strided", "contiguous"])
+    def test_fold_sizes_differ_by_at_most_one(self, scheme):
+        folds = kfold_indices(13, 5, seed=1, scheme=scheme)
+        sizes = sorted(len(f) for f in folds)
+        assert max(sizes) - min(sizes) <= 1
+        assert sum(sizes) == 13
+
+    def test_contiguous_remainder_is_held_out(self):
+        """N=13, k=5 -> sizes [3,3,3,2,2]; the 3 remainder points are held out,
+        not silently kept in every train complement (the fixed behaviour)."""
+        folds = kfold_indices(13, 5, seed=2, scheme="contiguous")
+        assert sorted(len(f) for f in folds) == [2, 2, 3, 3, 3]
+
+    def test_contiguous_byte_identical_when_no_remainder(self):
+        """N % k == 0 -> folds are exactly perm[k*fs:(k+1)*fs] (pre-fix split)."""
+        N, k = 20, 5
+        folds, perm = kfold_indices(N, k, seed=3, scheme="contiguous",
+                                    return_perm=True)
+        fs = N // k
+        for j in range(k):
+            assert np.array_equal(folds[j], perm[j * fs:(j + 1) * fs])
+
+    @pytest.mark.parametrize("scheme", ["strided", "contiguous"])
+    def test_deterministic_in_seed(self, scheme):
+        a = kfold_indices(30, 5, seed=7, scheme=scheme)
+        b = kfold_indices(30, 5, seed=7, scheme=scheme)
+        c = kfold_indices(30, 5, seed=8, scheme=scheme)
+        assert all(np.array_equal(x, y) for x, y in zip(a, b))
+        assert not all(np.array_equal(x, y) for x, y in zip(a, c))
+
+    def test_return_perm_is_a_permutation(self):
+        folds, perm = kfold_indices(25, 5, seed=0, return_perm=True)
+        assert np.array_equal(np.sort(perm), np.arange(25))
+
+    @pytest.mark.parametrize("bad", [1, 0, -3])
+    def test_rejects_too_few_folds(self, bad):
+        with pytest.raises(ValueError, match=r"n_folds must be >= 2"):
+            kfold_indices(20, bad, seed=0)
+
+    def test_rejects_more_folds_than_samples(self):
+        with pytest.raises(ValueError, match=r"exceeds the number of samples"):
+            kfold_indices(4, 5, seed=0)
+
+    def test_rejects_non_integer_and_bool_folds(self):
+        with pytest.raises(ValueError, match=r"n_folds must be an integer"):
+            kfold_indices(20, 5.0, seed=0)
+        with pytest.raises(ValueError, match=r"n_folds must be an integer"):
+            kfold_indices(20, True, seed=0)
+
+    def test_rejects_unknown_scheme(self):
+        with pytest.raises(ValueError, match=r"scheme must be"):
+            kfold_indices(20, 5, seed=0, scheme="blocked")

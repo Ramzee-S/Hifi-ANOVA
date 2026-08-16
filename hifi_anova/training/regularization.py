@@ -35,7 +35,7 @@ Strategies:
               Linear term gets small stability ridge (like curvature).
 """
 
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 import numpy as np
 
 from ..core.gram import build_derivative_penalty, build_gram_matrix
@@ -267,7 +267,8 @@ def build_regularization_vector(
     Args:
         D: number of variables
         K1: max harmonic, first order
-        K2: max harmonic, second order (0 for no second order)
+        K2: max harmonic, second order (0 for no second order), OR a per-pair
+            sequence of P orders (ragged pair blocks, one per pair)
         P: number of pairs
         strategy: regularization strategy — either a single string applied to
             all orders (e.g. 'curvature') or a dict with per-order strategies:
@@ -303,8 +304,21 @@ def build_regularization_vector(
 
     parts = [reg1]
 
-    # Second-order regularization
-    if K2 > 0 and P > 0:
+    # Second-order regularization. ``K2`` may be a per-pair sequence of P
+    # orders (the per-pair-K2 term-structure path): each pair block is then
+    # built at its own order and the blocks are ragged. A scalar K2 keeps the
+    # uniform tiled path byte-identical.
+    if not isinstance(K2, int) and hasattr(K2, '__len__'):
+        if len(K2) != P:
+            raise ValueError(
+                f"per-pair K2 sequence has {len(K2)} entries but P={P} pairs.")
+        for K2_p in K2:
+            block_p = _build_second_order_reg_block(
+                int(K2_p), lambda_order2, strat2,
+                include_linear=include_linear_2, basis_name=basis_name)
+            if len(block_p) > 0:
+                parts.append(jnp.array(block_p))
+    elif K2 > 0 and P > 0:
         single_block = _build_second_order_reg_block(
             K2, lambda_order2, strat2, include_linear=include_linear_2,
             basis_name=basis_name)

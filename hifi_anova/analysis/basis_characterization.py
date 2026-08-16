@@ -5,22 +5,26 @@ Fits three independent models and characterizes each variable's effect type:
   - Oscillatory (Fourier captures most)
   - Localized (Haar captures most — steps, thresholds, regime boundaries)
 
-Two analysis modes:
+Analysis modes:
   1. Independent fits: fit all three bases, compare RMSE and per-variable Sobol.
-  2. Cross-residual: fit Legendre first, project residual onto Fourier and Haar
-     per variable. Gives a decomposition: polynomial + oscillatory + localized.
+  2. Sequential projection (RECOMMENDED, used by the trainer's 'auto' mode):
+     Legendre → Fourier ⊥ Legendre → Haar ⊥ both. Exact, non-overlapping
+     additive decomposition: polynomial + oscillatory + localized.
+  2b. Cross-residual: Fourier and Haar each fit independently to the same
+     Legendre residual — quick upper bounds that double-count shared content.
 
 Usage:
     from hifi_anova.analysis.basis_characterization import (
-        multi_basis_fit, cross_residual_characterization, auto_select_basis
+        multi_basis_fit, sequential_projection_characterization,
+        auto_select_basis
     )
 
     # Quick comparison
     comp = multi_basis_fit(x_train, y_train, x_val, y_val)
     print(comp['summary'])  # which basis fits best overall
 
-    # Per-variable characterization
-    char = cross_residual_characterization(x_train, y_train, x_val, y_val)
+    # Per-variable characterization (exact additive decomposition)
+    char = sequential_projection_characterization(x_train, y_train, x_val, y_val)
     print_characterization_table(char)
 
     # Automatic basis recommendation
@@ -28,9 +32,8 @@ Usage:
     # {0: 'legendre', 1: 'fourier', 2: 'haar', ...}
 """
 
-import jax.numpy as jnp
-import numpy as np
-from typing import Dict, List, Optional, Tuple
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
+from typing import List, Optional
 
 from ..core.features import build_first_order_features, basis_size
 from ..core.gram import build_gram_matrix
@@ -200,8 +203,17 @@ def cross_residual_characterization(
     Step 3: Per-variable Haar projection of residual (localized component).
     Step 4: Remaining = unexplained.
 
-    The Fourier and Haar fractions are upper bounds (they may overlap).
-    For exact accounting, use sequential_projection_characterization().
+    All component variances (poly/osc/local) are EMPIRICAL variances of the
+    fitted components under the training-data measure, so the fractions are
+    measure-coherent. (For quantile-uniform inputs these estimate the
+    uniform-measure variances.)
+
+    The Fourier and Haar fractions are upper bounds: both are fit
+    independently to the SAME Legendre residual, so shared content (e.g. a
+    step function, which loads on both) is double-counted and the normalized
+    fractions overstate osc+local. For exact, non-overlapping accounting use
+    sequential_projection_characterization() — the recommended default for
+    basis selection (and what the trainer's 'auto' mode uses).
 
     Args:
         x_train, y_train: training data, x in [0,1].
@@ -256,18 +268,20 @@ def cross_residual_characterization(
     r_sq = 1.0 - float(jnp.mean(residual_val ** 2)) / (var_y + 1e-10)
     residual_var = float(jnp.var(residual_train))
 
-    # Per-variable Legendre Sobol
-    G_L = build_gram_matrix(K_legendre, basis_name='legendre')
+    # Per-variable Legendre component variance — EMPIRICAL (training measure).
+    # The osc/local variances below are empirical variances of fitted
+    # components, so the polynomial share must be too: the analytic Gram form
+    # w^T G w is the uniform-measure variance, and mixing the two measures in
+    # one ratio is only valid when the inputs are exactly U[0,1].
     B_L = basis_size(K_legendre, basis_name='legendre')
     poly_vars = {}
     for i in range(D):
         wi = w_L[i * B_L:(i + 1) * B_L]
-        poly_vars[i] = float(wi @ G_L @ wi)
+        pred_L_i = phi_L_train[:, i * B_L:(i + 1) * B_L] @ wi
+        poly_vars[i] = float(jnp.var(pred_L_i))
 
     # Steps 2 & 3: Per-variable Fourier and Haar projection of residual
-    B_F = basis_size(K_fourier, basis_name='fourier')
     haar = HaarBasis(J_haar)
-    B_H = haar.n_basis
 
     osc_vars = {}
     local_vars = {}
@@ -379,10 +393,14 @@ def sequential_projection_characterization(
     """Exact decomposition via sequential orthogonal projection.
 
     Order: Legendre first → Fourier (projected ⊥ Legendre) → Haar (projected ⊥ both).
-    The variance decomposition is ADDITIVE (sums exactly).
+    The variance decomposition is ADDITIVE (sums exactly) in the empirical
+    (training-sample) inner product; all component variances are empirical
+    variances under the training-data measure, so the fractions are
+    measure-coherent.
 
     Unlike cross_residual_characterization(), the Fourier and Haar fractions
-    here are exact (non-overlapping).
+    here are exact (non-overlapping). This is the recommended characterization
+    for basis selection.
 
     Returns same structure as cross_residual_characterization().
     """
@@ -404,13 +422,16 @@ def sequential_projection_characterization(
     pred_L = phi_L_train @ w_L
     residual = y_c_train - pred_L
 
-    # Per-variable Legendre Sobol
-    G_L = build_gram_matrix(K_legendre, basis_name='legendre')
+    # Per-variable Legendre component variance — EMPIRICAL (training measure),
+    # same measure as the projected Fourier/Haar variances below. The
+    # additivity of this decomposition holds in the empirical inner product,
+    # so the empirical measure is the coherent choice for all three shares.
     B_L = basis_size(K_legendre, basis_name='legendre')
     poly_vars = {}
     for i in range(D):
         wi = w_L[i * B_L:(i + 1) * B_L]
-        poly_vars[i] = float(wi @ G_L @ wi)
+        pred_L_i = phi_L_train[:, i * B_L:(i + 1) * B_L] @ wi
+        poly_vars[i] = float(jnp.var(pred_L_i))
 
     haar = HaarBasis(J_haar)
     per_variable = {}

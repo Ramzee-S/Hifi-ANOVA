@@ -1,0 +1,38 @@
+# MANIFEST.in — controls the setuptools *source distribution* (sdist) file list.
+#
+# Scope note: this governs `python -m build` / `sdist` only. The public GitHub
+# *release snapshot* is produced separately by dev/tools/make_release.sh
+# (git archive + .gitattributes export-ignore + dev/release_manifest.txt); the
+# rules here mirror that policy for the packaging channel so both stay
+# self-contained. The installed wheel already excludes tests/examples via
+# [tool.setuptools.packages.find] in pyproject.toml.
+
+# Root pytest configuration/fixtures. setuptools does not auto-include a
+# top-level conftest.py (it is not part of a package), but the shipped tests
+# need it — it registers the `--all`/`--full` options and the smoke/slow/
+# integration markers. Include it so the sdist test suite is actually runnable.
+include conftest.py
+
+# The study-port tests import the private, unshipped `studies/` tree (which is
+# export-ignored from the release). Keep the rest of the test suite in the sdist
+# so evaluators can run it, but drop these so the shipped tests are
+# self-contained (mirrors the `.gitattributes` `/tests/test_studies_*` rule).
+exclude tests/test_studies_*.py
+# GUI 2.0 is private; keep tests which import it out of public sdists.
+exclude tests/test_gui2_*.py
+
+# Defense-in-depth: private trees must never enter an sdist even if a future
+# setuptools default changes. (None of these are picked up today; these are
+# declarative guards, not deletions.)
+prune studies
+prune dev
+prune gui
+prune gui2
+prune Session
+prune XSession
+prune Theory
+prune Xdocs
+recursive-exclude docs *.tex *.pdf *.aux *.log *.out
+global-exclude CC_*
+global-exclude X8C_*
+exclude gui2p0_design_proposal.md

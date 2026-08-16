@@ -19,7 +19,7 @@ Scaling examples (D=50, K2=5, block=121 features per pair):
   'either'(5 act): 5*45    =  225 pairs →  27,225 features
 """
 
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 import numpy as np
 from itertools import combinations
 from typing import Optional, List
@@ -99,6 +99,26 @@ class PairManager:
                 key = (int(self.pair_indices[p, 0]), int(self.pair_indices[p, 1]))
                 self._pair_lookup[key] = p
         return self._pair_lookup.get((i, j), -1)
+
+
+def pair_manager_from_pairs(D: int, pairs) -> PairManager:
+    """Build a :class:`PairManager` holding an EXPLICIT (i, j) pair list.
+
+    Unlike the constructor (which enumerates pairs from an active-variable
+    set), this pins the pair set verbatim — used by the user-defined
+    term-structure paths (per-pair K2 mapping, variable_orders pair filters)
+    where the pairs are specified, not selected. Pairs must already be
+    canonical (i < j); order is preserved.
+    """
+    mgr = PairManager(D, active_variables=[], selection_mode='both')
+    mgr.P = len(pairs)
+    if mgr.P:
+        mgr.pair_indices = jnp.array(np.array(list(pairs), dtype=np.int32))
+    else:
+        mgr.pair_indices = jnp.zeros((0, 2), dtype=jnp.int32)
+    mgr.active_variables = None
+    mgr.selection_mode = 'explicit_pairs'
+    return mgr
 
 
 def select_active_variables(first_order_sobol: dict, D: int,

@@ -13,10 +13,9 @@ These diagnostics guide the decision tree:
   4. r^2 varies with inputs → add/improve variance model
 """
 
-import jax
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 import numpy as np
-from typing import Optional, Dict
+from typing import Dict
 from dataclasses import dataclass
 
 
@@ -46,10 +45,11 @@ class ResidualDiagnostics:
 
 def analyze_residuals(model, x_data: jnp.ndarray, y_data: jnp.ndarray,
                       top_pairs: int = 10) -> ResidualDiagnostics:
-    """Analyze Fourier residuals to determine if a residual NN is needed.
+    """Analyze model residuals to determine if a residual stage is needed.
 
     Args:
-        model: fitted HiFiANOVA (Fourier part only, no NN)
+        model: fitted HiFiANOVA (any attached residual model is included in
+            the prediction, so the analyzed leftover is the true one)
         x_data: (N, D) inputs in [0, 1]
         y_data: (N,) targets
         top_pairs: how many top interaction pairs to report
@@ -59,10 +59,17 @@ def analyze_residuals(model, x_data: jnp.ndarray, y_data: jnp.ndarray,
     """
     N, D = x_data.shape
 
-    # Compute Fourier predictions and residuals
+    # Compute mean-model predictions and residuals. Includes the third-order
+    # block and any attached residual model (both were omitted before BR-10,
+    # overstating the leftover for K3>0 / post-Stage-C fits).
     phi1 = model.build_phi1(x_data)
     phi2 = model.build_phi2(x_data)
-    fourier_pred = model.mean_model.predict(phi1, phi2)
+    phi3 = model.build_phi3(x_data)
+    fourier_pred = model.mean_model.predict(phi1, phi2, phi3)
+    if model.residual_net is not None:
+        from ..model.linear_residual import predict_residual_batch
+        fourier_pred = fourier_pred + predict_residual_batch(
+            model.residual_net, x_data)
     residuals = np.array(y_data - fourier_pred)
     x_np = np.array(x_data)
 

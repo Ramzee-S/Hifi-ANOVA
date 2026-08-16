@@ -16,10 +16,9 @@ Pair selection modes (set via config 'pair_selection'):
   list[int]     — Explicit list of active variable indices (uses 'both' logic).
 """
 
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 import numpy as np
 from math import comb
-from typing import Optional, List
 
 from ..core.pairs import PairManager, select_active_variables
 from ..core.features import basis_size
@@ -107,11 +106,17 @@ def _resolve_pair_manager(pair_selection, D, K1, K2, G1, w1, N,
                 f"Pass them from the trainer.")
         if reg1 is None:
             reg1 = np.asarray(build_regularization_vector(
-                D, K1, 0, 0, strategy, lambda1, 0.0), dtype=np.float64)
+                D, K1, 0, 0, strategy, lambda1, 0.0,
+                include_linear_1=include_linear_1,
+                basis_name=basis_name), dtype=np.float64)
 
         active, sel_info = select_active_variables_principled(
             Phi1, y_centered, D, K1, reg1,
-            method=pair_selection, verbose=verbose,
+            method=pair_selection,
+            G1=np.asarray(G1, dtype=np.float64),
+            include_linear=include_linear_1,
+            basis_name=basis_name,
+            verbose=verbose,
         )
 
         if max_pair_variables is not None and len(active) > max_pair_variables:

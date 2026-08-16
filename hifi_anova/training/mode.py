@@ -29,8 +29,7 @@ Auto mode decision logic:
   nothing to learn. It's cheaper to try and discard than to miss structure.
 """
 
-import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 
 MODE_STAGES = {
@@ -58,7 +57,16 @@ def resolve_mode(config: Dict) -> Dict:
 
     mode = config.pop('mode', None)
     if mode is None:
-        return config
+        # An explicit 'stages' list is honored as-is (backward compatible).
+        # Otherwise the DEFAULT is mean-only (stages A, B): the variance model
+        # (Stage D) and the nonlinear residual (Stage C) are opt-in, never
+        # fitted by accident. Fitting a variance model is only meaningful when
+        # the noise is genuinely input-dependent; defaulting it on is a footgun
+        # (an ill-posed variance fit can destabilize the mean). Ask for it
+        # explicitly via mode='heteroscedastic'/'full'/'auto' or stages=[...].
+        if 'stages' in config:
+            return config
+        mode = 'second'
 
     if mode == 'auto':
         config['_auto_mode'] = True

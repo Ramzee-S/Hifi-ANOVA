@@ -1,6 +1,6 @@
 """FourierComponent: coefficient block + Gram reference for Sobol computation."""
 
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 from dataclasses import dataclass
 from typing import Tuple
 

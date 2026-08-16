@@ -12,8 +12,30 @@ GCV is recommended as the default when F > N.
 """
 
 import numpy as np
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple
 from scipy.optimize import minimize_scalar, minimize
+
+# Proper-prior floor for penalty entries in the evidence log-determinants.
+# Exact zeros (smoothness/curvature/spectral leave k=0 unpenalized) make R
+# singular, so the Sylvester identity log|K| = log|A| - log|R| is invalid for
+# the raw penalty. Flooring reg at _REG_FLOOR inside log|R| evaluates the
+# evidence of the proper model with prior precision max(reg, _REG_FLOOR) —
+# the same convention as the dual form's R^{-1} cap at 1/_REG_FLOOR — up to
+# an O(_REG_FLOOR) perturbation of log|A|. The floored entries are constant
+# in lambda, so lambda selection is unaffected; the evidence VALUE becomes
+# consistent across the primal, dual, multi-lambda, and JAX paths.
+_REG_FLOOR = 1e-12
+
+# Degrees of freedom consumed by the profiled (centered-out) intercept. Every
+# criterion path in this module receives y CENTERED (plain or weighted mean
+# subtracted before the solve), which spends ~1 df that tr(H) of the centered
+# design does not count — omitting it under-penalizes GCV/AIC/BIC by one
+# parameter. The criteria therefore use df + INTERCEPT_DF; the reported 'df'
+# stays tr(H) (complexity of the penalized block only). The +1 is constant in
+# lambda, so criterion GRADIENTS are unchanged in form; for AIC/BIC it shifts
+# the value by a lambda-independent constant (selection unchanged), for GCV it
+# slightly shifts the selected lambda (the corrected criterion).
+INTERCEPT_DF = 1.0
 
 
 def _log_profile_evidence_dual(Phi: np.ndarray, y: np.ndarray,
@@ -74,10 +96,12 @@ def _log_profile_evidence_primal(Phi: np.ndarray, y: np.ndarray,
     sigma2_profile = max(1e-15, float(y @ r) / N)
 
     # log|K| via Sylvester: |I + Phi R^{-1} Phi^T| = |Phi^T Phi + R| / |R|
+    # Zero penalty entries are floored (see _REG_FLOOR): dropping them from
+    # log|R| while log|A| keeps their Phi^T Phi contribution would make the
+    # identity, and hence the evidence, invalid.
     A = Phi.T @ Phi + np.diag(reg_diag)
     sign, logdet_A = np.linalg.slogdet(A)
-    pos_reg = reg_diag[reg_diag > 1e-15]
-    logdet_R = np.sum(np.log(pos_reg)) if len(pos_reg) > 0 else 0.0
+    logdet_R = float(np.sum(np.log(np.maximum(reg_diag, _REG_FLOOR))))
     logdet_K = logdet_A - logdet_R
 
     log_ev = (-N / 2.0 * np.log(sigma2_profile)
@@ -94,6 +118,9 @@ def ridge_solve_with_diagnostics(Phi: np.ndarray, y: np.ndarray,
 
     Returns w*, effective df, RSS, MSE, GCV, AIC, BIC, log-evidence.
     Automatically selects dual-form evidence when F > N.
+
+    y is expected CENTERED (package convention): the GCV/AIC/BIC criteria add
+    INTERCEPT_DF for the profiled mean; the returned 'df' stays tr(H).
     """
     Phi = np.asarray(Phi, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
@@ -117,13 +144,12 @@ def ridge_solve_with_diagnostics(Phi: np.ndarray, y: np.ndarray,
     A_inv = np.linalg.inv(A)
     df = float(np.trace(A_inv @ PhiTPhi))
 
-    # GCV
-    gcv_denom = max(1e-10, 1.0 - df / N)
+    # GCV / AIC / BIC — model df includes the profiled intercept (INTERCEPT_DF)
+    df_sel = df + INTERCEPT_DF
+    gcv_denom = max(1e-10, 1.0 - df_sel / N)
     gcv_val = (rss_val / N) / gcv_denom ** 2
-
-    # AIC, BIC
-    aic_val = N * np.log(max(mse_val, 1e-15)) + 2.0 * df
-    bic_val = N * np.log(max(mse_val, 1e-15)) + np.log(N) * df
+    aic_val = N * np.log(max(mse_val, 1e-15)) + 2.0 * df_sel
+    bic_val = N * np.log(max(mse_val, 1e-15)) + np.log(N) * df_sel
 
     # Profile log marginal likelihood — sigma^2 profiled out analytically.
     # Uses dual form (N x N) when F > N for numerical stability.
@@ -211,7 +237,7 @@ class RidgePathEigSolver:
         """Return the same dict as ``ridge_solve_with_diagnostics(Phi, y,
         lam*reg_shape)`` for this solver's ``(Phi, y, reg_shape)``."""
         lam = float(lam)
-        N, F = self.N, self.F
+        N, _F = self.N, self.F
         mu, c = self._mu, self._c
         denom = mu + lam
         a = c / denom
@@ -224,10 +250,11 @@ class RidgePathEigSolver:
         mse = rss / N
 
         df = float(np.sum(mu / denom))
-        gcv_denom = max(1e-10, 1.0 - df / N)
+        df_sel = df + INTERCEPT_DF          # profiled-intercept df in criteria
+        gcv_denom = max(1e-10, 1.0 - df_sel / N)
         gcv = (rss / N) / gcv_denom ** 2
-        aic = N * np.log(max(mse, 1e-15)) + 2.0 * df
-        bic = N * np.log(max(mse, 1e-15)) + np.log(N) * df
+        aic = N * np.log(max(mse, 1e-15)) + 2.0 * df_sel
+        bic = N * np.log(max(mse, 1e-15)) + np.log(N) * df_sel
 
         sigma2_profile = max(1e-15, float(self._y @ resid) / N)  # y^T r / N
         logdet_K = float(np.sum(np.log(denom) - np.log(lam)))
@@ -276,16 +303,16 @@ class RidgePathEigSolver:
         m = method.lower()
         if m == 'gcv':
             u = rss / N
-            v = 1.0 - df / N          # gcv denominator base
+            v = 1.0 - (df + INTERCEPT_DF) / N   # gcv denominator base
             v = v if v > 1e-10 else 1e-10   # match ridge_solve_with_diagnostics guard
-            up, vp = rss_p / N, -df_p / N
+            up, vp = rss_p / N, -df_p / N   # INTERCEPT_DF is constant in lambda
             value = u / v ** 2
             grad = up / v ** 2 - 2.0 * u * vp / v ** 3
             return value, grad
         if m in ('aic', 'bic'):
             mse = max(rss / N, 1e-15)
             pen = 2.0 if m == 'aic' else float(np.log(N))
-            value = N * np.log(mse) + pen * df
+            value = N * np.log(mse) + pen * (df + INTERCEPT_DF)
             grad = N * rss_p / max(rss, 1e-15) + pen * df_p
             return value, grad
         if m == 'evidence':
@@ -423,8 +450,6 @@ def optimize_single_lambda(Phi: np.ndarray, y: np.ndarray,
         method = 'gcv'
 
     # Precompute
-    PhiTPhi = Phi.T @ Phi
-    PhiTy = Phi.T @ y
 
     def evaluate(lam):
         reg_diag = lam * reg_structure
@@ -507,27 +532,30 @@ def _criterion_valgrad_multi(Phi, C, b, y, shapes, sizes, loglams, method):
     m = method.lower()
     if m == 'gcv':
         u = rss / N
-        v = max(1e-10, 1.0 - df / N)
+        v = max(1e-10, 1.0 - (df + INTERCEPT_DF) / N)
         val = u / v ** 2
-        up, vp = rss_p / N, -df_p / N
+        up, vp = rss_p / N, -df_p / N       # INTERCEPT_DF is constant in lambda
         glin = up / v ** 2 - 2.0 * u * vp / v ** 3
     elif m in ('aic', 'bic'):
         mse = max(rss / N, 1e-15)
         pen = 2.0 if m == 'aic' else float(np.log(N))
-        val = N * np.log(mse) + pen * df
+        val = N * np.log(mse) + pen * (df + INTERCEPT_DF)
         glin = N * rss_p / max(rss, 1e-15) + pen * df_p
     elif m == 'evidence':
         P = float(y @ resid)
         sigma2 = max(P / N, 1e-15)
         sign, logdetA = np.linalg.slogdet(A)
-        pos = reg[reg > 1e-15]
-        logdetR = float(np.sum(np.log(pos))) if pos.size else 0.0
+        # Floored log|R| (see _REG_FLOOR); floored entries are constant in
+        # lambda, so only entries above the floor contribute to the gradient.
+        logdetR = float(np.sum(np.log(np.maximum(reg, _REG_FLOOR))))
         logdetK = logdetA - logdetR
         val = -(-N / 2.0 * np.log(sigma2) - 0.5 * logdetK
                 - N / 2.0 * (1.0 + float(np.log(2 * np.pi))))
         P_p = np.array([float(shapes[k] @ w2) for k in range(K)])
         logA_p = np.array([float(diagU @ shapes[k]) for k in range(K)])
-        logR_p = np.array([sizes[k] / lambdas[k] for k in range(K)])
+        logR_p = np.array([
+            float(np.sum((shapes[k] > 0) & (reg > _REG_FLOOR))) / lambdas[k]
+            for k in range(K)])
         dlog_ev = -N / 2.0 * (P_p / max(P, 1e-15)) - 0.5 * (logA_p - logR_p)
         glin = -dlog_ev
     else:

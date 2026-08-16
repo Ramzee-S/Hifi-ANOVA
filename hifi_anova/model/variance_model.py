@@ -9,11 +9,11 @@ Mirrors the MeanModel structure for the log-variance:
 - Linear residual (optional, RBF/RFF/GP for higher-order variance structure)
 
 Each component has its own regularization (λ_h1, λ_h2, λ_h3, λ_h_res).
-Variance Sobol indices are computed per order, paralleling mean Sobol.
+Log-variance indices S^h are computed per order, paralleling mean Sobol.
 """
 
 import jax
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 import equinox as eqx
 from typing import Optional
 
@@ -39,11 +39,12 @@ class VarianceModel(eqx.Module):
     # Second-order variance (optional)
     w2: jax.Array = eqx.field(default_factory=lambda: jnp.array([], dtype=jnp.float32))
     K2h: int = eqx.field(static=True, default=0)
-    pair_indices_h: Optional[jnp.ndarray] = eqx.field(static=True, default=None)
+    # Dynamic integer leaves (see HiFiANOVA): not static, so no static-array warning.
+    pair_indices_h: Optional[jnp.ndarray] = None
     # Third-order variance (optional)
     w3: jax.Array = eqx.field(default_factory=lambda: jnp.array([], dtype=jnp.float32))
     K3h: int = eqx.field(static=True, default=0)
-    triple_indices_h: Optional[jnp.ndarray] = eqx.field(static=True, default=None)
+    triple_indices_h: Optional[jnp.ndarray] = None
     # Optional RBF/RFF residual for higher-order variance
     w_var_residual: Optional[jax.Array] = None
     variance_residual: Optional[eqx.Module] = None
@@ -52,6 +53,13 @@ class VarianceModel(eqx.Module):
     include_linear_h1: bool = eqx.field(static=True, default=True)
     include_linear_h2: bool = eqx.field(static=True, default=True)
     include_linear_h3: bool = eqx.field(static=True, default=True)
+    # Variance-variable subset (BR-01): tuple of TRUE variable indices whose
+    # first-order variance blocks are in the model. None = all D (backward
+    # compatible). ``w1`` then has len(variance_variables) blocks laid out in
+    # ascending true-index order; excluded variables carry NO variance block —
+    # sigma²(x) is flat along them BY USER ASSERTION (a homoscedasticity
+    # assumption along those directions, not a data-driven finding).
+    variance_variables: tuple = eqx.field(static=True, default=None)
 
     def predict_log_variance(self, psi1: jnp.ndarray,
                               psi2: Optional[jnp.ndarray] = None,
@@ -101,8 +109,19 @@ class VarianceModel(eqx.Module):
         return basis_size(self.K3h, self.include_linear_h3, self.basis_name) ** 3
 
     def get_coefficients_for_variable(self, i: int) -> jnp.ndarray:
-        """Slice of w1 for variable i. Shape (B_h,)."""
+        """Slice of w1 for TRUE variable index i. Shape (B_h,).
+
+        With a variance-variable subset, ``w1`` holds only the included
+        variables' blocks (ascending true-index order); an excluded variable
+        returns an all-zero block (its variance effect is identically 0).
+        """
         block = self._block_h1()
+        vv = getattr(self, 'variance_variables', None)
+        if vv is not None:
+            if i not in vv:
+                return jnp.zeros(block, dtype=self.w1.dtype)
+            pos = vv.index(i)
+            return self.w1[pos * block: (pos + 1) * block]
         return self.w1[i * block: (i + 1) * block]
 
     def get_coefficients_for_pair(self, p: int) -> jnp.ndarray:

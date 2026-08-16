@@ -53,7 +53,9 @@ import warnings
 import numpy as np
 import jax.numpy as jnp
 
-from .ridge import weighted_ridge_solve
+from .ridge import (weighted_ridge_solve, leverage_diag as _leverage_diag,
+                    kfold_indices,
+                    debias_squared_residuals)
 from .newton import newton_solve_log_variance
 from ..model.variance_model import LOG_VAR_CLIP
 
@@ -76,17 +78,8 @@ def _nll_per_point(y, mu, h):
     return 0.5 * _LOG2PI + 0.5 * hc + 0.5 * (y - mu) ** 2 * np.exp(-hc)
 
 
-def _leverage_diag(Phi_aug: np.ndarray, reg_aug: np.ndarray,
-                   weights: np.ndarray) -> np.ndarray:
-    """Diagonal of the weighted ridge hat matrix.
-
-    ``S = Phi_aug (Phi_aug^T W Phi_aug + diag(reg_aug))^{-1} Phi_aug^T W``;
-    ``lev_n = w_n * phi_n^T A^{-1} phi_n``. ``sum(lev) = tr(S) = df_mean``.
-    """
-    A = Phi_aug.T @ (weights[:, None] * Phi_aug) + np.diag(reg_aug)
-    X = np.linalg.solve(A, Phi_aug.T)                     # A^{-1} Phi^T  (F, N)
-    quad = np.einsum('nf,fn->n', Phi_aug, X)              # phi_n^T A^{-1} phi_n
-    return weights * quad
+# _leverage_diag lives in ridge.py (leverage_diag) so the trainer's Stage-D
+# loop and this module share one implementation (DEC-028).
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +91,8 @@ class _JointFit:
 
     __slots__ = ('w_aug', 'f0', 'w_h', 'h0', 'mu', 'h', 'sigma2', 'weights',
                  'r2', 'lev', 'df_mean', 'reg_mean_aug', 'reg_var',
-                 'Phi_aug', 'Psi', 'y', 'sigma2_floor')
+                 'Phi_aug', 'Psi', 'y', 'sigma2_floor', 'leverage_correct',
+                 'converged')
 
     def nll(self) -> float:
         return float(np.mean(_nll_per_point(self.y, self.mu, self.h)))
@@ -131,10 +125,11 @@ def _joint_fit(Phi_aug: np.ndarray, Psi: np.ndarray, y: np.ndarray,
     h0 = float(np.log(max(np.mean(r2), 1e-12)))
     h = h0 + Psi @ w_h
     prev = np.inf
+    converged = False
 
     for _ in range(max_outer):
-        # Variance step on leverage-corrected squared residuals.
-        r2_eff = r2 / np.clip(1.0 - lev, 1e-3, 1.0) if leverage_correct else r2
+        # Variance step on leverage-corrected squared residuals (DEC-028).
+        r2_eff = debias_squared_residuals(r2, lev, correct=leverage_correct)
         w_h, h0 = newton_solve_log_variance(
             jnp.asarray(Psi), jnp.asarray(r2_eff), jnp.asarray(w_h),
             float(h0), jnp.asarray(reg_var), max_iter=newton_max)
@@ -154,6 +149,7 @@ def _joint_fit(Phi_aug: np.ndarray, Psi: np.ndarray, y: np.ndarray,
 
         loss = float(np.mean(_nll_per_point(y, mu, h)))
         if abs(prev - loss) / (abs(prev) + 1e-12) < tol:
+            converged = True
             break
         prev = loss
 
@@ -165,6 +161,18 @@ def _joint_fit(Phi_aug: np.ndarray, Psi: np.ndarray, y: np.ndarray,
     fit.reg_mean_aug, fit.reg_var = reg_mean_aug, reg_var
     fit.Phi_aug, fit.Psi, fit.y = Phi_aug, Psi, y
     fit.sigma2_floor = sigma2_floor
+    # Whether the variance step used the leverage-corrected (quasi-likelihood)
+    # residual moment. LAML is a Laplace evidence only at a RAW penalized-
+    # likelihood mode (leverage_correct=False); at the adjusted fixed point it is
+    # an empirical criterion, not principled evidence (P1-4). ``joint_laml`` reads
+    # this to label its return honestly.
+    fit.leverage_correct = bool(leverage_correct)
+    # Did the alternating loop meet its relative-NLL tolerance (vs exhausting
+    # max_outer)? Raw mode ALONE does not establish an interior stationary point —
+    # a non-converged (or clipped) raw fit is not a mode of the penalized
+    # likelihood, so ``joint_laml`` requires convergence AND interiority before
+    # claiming ``laplace_evidence``.
+    fit.converged = bool(converged)
     return fit
 
 
@@ -204,6 +212,20 @@ def joint_laml(fit: _JointFit, cross: bool = False) -> Dict:
     Returns a dict with ``laml`` (the log-evidence, higher = better) and the pieces,
     including ``cross_ratio`` = ||H_wh|| / sqrt(||H_ww|| ||H_hh||) as a
     mean/variance-confounding diagnostic.
+
+    P1-4 caution (evidence status). LAML is a Laplace approximation to the
+    penalized-likelihood evidence, and is principled only at a *verified interior
+    stationary point* of that penalized likelihood: the fit must be RAW
+    (``leverage_correct=False``) AND have converged (not exhausted ``max_outer``)
+    AND be interior (no ``LOG_VAR_CLIP`` activation). Raw mode alone is not enough
+    — a non-converged or clipped raw fit is not a mode of the scored objective.
+    At the leverage-adjusted (quasi-likelihood) fixed point the scored objective
+    is never the one the fit sits at. The numerics are unchanged; the return dict
+    carries ``objective_mode``, ``evidence_status`` (``laplace_evidence`` only
+    when verified-interior-raw; ``laplace_evidence_unverified`` for raw-but-not-
+    established; ``empirical_criterion`` for the adjusted mode), plus ``converged``
+    and ``bound_active`` so callers do not present an unverified LAML as principled
+    evidence. The full coherence derivation is Tier N (deferred).
     """
     Phi_aug, Psi, y = fit.Phi_aug, fit.Psi, fit.y
     W = fit.weights
@@ -240,8 +262,32 @@ def joint_laml(fit: _JointFit, cross: bool = False) -> Dict:
     laml = -L_pen + 0.5 * logdetR - 0.5 * logdetH
     cross_ratio = float(np.linalg.norm(H_wh) /
                         np.sqrt(np.linalg.norm(H_ww) * np.linalg.norm(H_hh) + 1e-300))
+    # Honest evidence labelling (P1-4). A Laplace evidence is principled ONLY at a
+    # verified interior stationary point of the RAW penalized likelihood — raw
+    # mode ALONE is not enough: the alternating loop must have converged (not
+    # exhausted max_outer) AND the log-variance must be interior (no clip
+    # activation). The adjusted (leverage-corrected) fixed point is never a mode
+    # of the scored objective, so it is always an empirical criterion; a raw fit
+    # that did not converge or hit the clip is an unverified mode.
+    lev_adj = bool(getattr(fit, 'leverage_correct', True))
+    converged = bool(getattr(fit, 'converged', True))
+    _h = np.asarray(fit.h, dtype=np.float64)
+    _btol = 1e-9 * LOG_VAR_CLIP
+    bound_active = bool(np.any(_h <= -LOG_VAR_CLIP + _btol)
+                        or np.any(_h >= LOG_VAR_CLIP - _btol))
+    objective_mode = ('adjusted_quasi_likelihood' if lev_adj
+                      else 'raw_penalized_likelihood')
+    if lev_adj:
+        evidence_status = 'empirical_criterion'
+    elif converged and not bound_active:
+        evidence_status = 'laplace_evidence'
+    else:
+        # Raw objective, but the mode is not established (not converged / clipped).
+        evidence_status = 'laplace_evidence_unverified'
     return {'laml': float(laml), 'L_pen': L_pen, 'logdetR': logdetR,
-            'logdetH': float(logdetH), 'cross_ratio': cross_ratio}
+            'logdetH': float(logdetH), 'cross_ratio': cross_ratio,
+            'objective_mode': objective_mode, 'evidence_status': evidence_status,
+            'converged': converged, 'bound_active': bound_active}
 
 
 # ---------------------------------------------------------------------------
@@ -249,9 +295,9 @@ def joint_laml(fit: _JointFit, cross: bool = False) -> Dict:
 # ---------------------------------------------------------------------------
 
 def _kfold_indices(N: int, k: int, seed: int) -> List[np.ndarray]:
-    rng = np.random.RandomState(seed)
-    perm = rng.permutation(N)
-    return [perm[i::k] for i in range(k)]
+    # Strided folds (perm[i::k]) — shared splitter, byte-identical to the
+    # previous inline version. See ridge.kfold_indices.
+    return kfold_indices(N, k, seed, scheme='strided')
 
 
 def _kfold_nll(Phi_aug, Psi, y, reg_mean_aug, reg_var, *, k, seed,
@@ -417,6 +463,18 @@ def optimize_joint_lambda(
     n_splits = max(n_folds, 5) if single_split else n_folds
 
     warns: List[str] = []
+    # P1-4: LAML is a coherent Laplace evidence only at a raw penalized-likelihood
+    # mode. Selecting lambda_h by LAML while the fits are leverage-corrected scores
+    # an objective the fits are not the mode of, so the criterion is empirical, not
+    # principled. Surface it once rather than let 'laml' read as evidence.
+    if criterion == 'laml' and leverage_correct:
+        warns.append(
+            "criterion='laml' with leverage_correct=True: LAML is evaluated at the "
+            "leverage-adjusted (quasi-likelihood) fixed point, which is not a mode "
+            "of the raw penalized likelihood LAML scores. Treat the value as an "
+            "experimental empirical criterion, not principled model evidence (each "
+            "path point also carries evidence_status='empirical_criterion'). For a "
+            "coherent Laplace evidence use leverage_correct=False.")
     lo, hi = np.log10(lambda_h_bounds[0]), np.log10(lambda_h_bounds[1])
 
     def score(lam_h: float) -> Dict:
@@ -435,6 +493,8 @@ def optimize_joint_lambda(
             L = joint_laml(fit, cross=laml_cross)
             rec['laml'] = L['laml']
             rec['cross_ratio'] = L['cross_ratio']
+            rec['evidence_status'] = L['evidence_status']
+            rec['objective_mode'] = L['objective_mode']
             obj = -L['laml']                      # minimize -LAML
         else:
             cv = _kfold_nll(Phi_aug, Psi, y, reg_mean_aug, lam_h * var_reg_shape,
@@ -452,7 +512,7 @@ def optimize_joint_lambda(
 
     # --- grid sweep ---
     grid = np.logspace(lo, hi, n_grid)
-    path = [score(float(l)) for l in grid]
+    path = [score(float(lam)) for lam in grid]
     objs = np.array([p['objective'] for p in path])
     best_i = int(np.argmin(objs))
     best = path[best_i]

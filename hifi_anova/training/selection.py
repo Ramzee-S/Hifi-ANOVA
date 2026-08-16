@@ -46,9 +46,9 @@ Usage:
 
 import numpy as np
 from typing import List, Tuple, Dict, Optional
-from itertools import combinations
 
 from ..core.features import basis_size
+from .ridge import kfold_indices
 
 
 def _gram_weighted_norm(w_g: np.ndarray, G: Optional[np.ndarray] = None) -> float:
@@ -127,8 +127,9 @@ def select_groups_bic(
         reg_drop = reg_diag[cols_keep]
 
         if Phi_drop.shape[1] == 0:
-            # Degenerate: only one group
-            bic_drop = N * np.log(np.var(y))
+            # Degenerate: only one group. Guard log(0) when y is constant
+            # (zero variance) so BIC stays finite instead of -inf.
+            bic_drop = N * np.log(max(float(np.var(y)), 1e-12))
         else:
             drop_diag = ridge_solve_with_diagnostics(Phi_drop, y, reg_drop)
             bic_drop = drop_diag['bic']
@@ -225,10 +226,11 @@ def _group_lasso_solve(
     gram_matrices: Optional[List[Optional[np.ndarray]]] = None,
     max_iter: int = 200,
     tol: float = 1e-5,
+    group_weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Solve the group-lasso problem via block coordinate descent.
 
-    min_w  ½||y - Φw||² + w^T diag(reg_l2) w + γ Σ_g ||w_g||_G
+    min_w  ½||y - Φw||² + w^T diag(reg_l2) w + γ Σ_g √df_g ||w_g||_G
 
     where ||w_g||_G = sqrt(w_g^T G_g w_g) is the Gram-weighted norm.
     If gram_matrices is None, falls back to standard ||w_g||₂.
@@ -236,14 +238,17 @@ def _group_lasso_solve(
     The Gram-weighted norm ensures the penalty reflects actual variance
     contribution, not raw coefficient magnitude. This is critical because
     linear terms (variance 1/12) and harmonic terms (variance 1/2) have
-    very different scales.
+    very different scales. The per-group ``√df_g`` weight (Yuan & Lin) makes
+    the single nominal ``γ`` comparable across groups of different cardinality
+    (first-order 2K+1, pairs (2K+1)², triples (2K+1)³) — see
+    :func:`hifi_anova.training.sparse.group_size_weights`.
 
     Uses block coordinate descent: for each group g:
       1. Compute partial residual: r_g = y - Φ_{-g} w_{-g}
       2. Compute unconstrained solution: v_g = (Φ_g^T Φ_g + R_g)^{-1} Φ_g^T r_g
-      3. Apply group soft-thresholding: w_g = max(0, 1 - γ/||v_g||_G) · v_g
+      3. Apply group soft-thresholding: w_g = max(0, 1 - γ√df_g/||v_g||_G) · v_g
 
-    Groups where ||v_g||_G ≤ γ get w_g = 0 exactly (hard selection).
+    Groups where ||v_g||_G ≤ γ√df_g get w_g = 0 exactly (hard selection).
 
     Args:
         Phi: (N, F) feature matrix
@@ -254,16 +259,19 @@ def _group_lasso_solve(
         gram_matrices: list of Gram matrices per group (or None for standard norm)
         max_iter: maximum BCD iterations
         tol: convergence tolerance
+        group_weights: per-group size weights √df_g (default all-ones if None;
+            :func:`select_groups_glasso` passes the computed weights).
 
     Returns:
         w: (F,) solution with some groups exactly zero
     """
     N, F = Phi.shape
     n_groups = len(group_slices)
+    if group_weights is None:
+        group_weights = np.ones(n_groups, dtype=np.float64)
     w = np.zeros(F, dtype=np.float64)
 
     # Precompute per-group quantities
-    PhiTy = Phi.T @ y
     A_inv_groups = []
     for sl in group_slices:
         Phi_g = Phi[:, sl]
@@ -286,11 +294,12 @@ def _group_lasso_solve(
             # Unconstrained group solution
             v_g = A_inv_groups[g] @ (Phi_g.T @ r_g)
 
-            # Gram-weighted group soft-thresholding
+            # Gram-weighted, size-weighted group soft-thresholding
             G_g = gram_matrices[g] if gram_matrices is not None else None
             v_norm = _gram_weighted_norm(v_g, G_g)
-            if v_norm > gamma:
-                w[sl] = (1.0 - gamma / v_norm) * v_g
+            thr = gamma * group_weights[g]
+            if v_norm > thr:
+                w[sl] = (1.0 - thr / v_norm) * v_g
             else:
                 w[sl] = 0.0
 
@@ -333,12 +342,21 @@ def select_groups_glasso(
     gram_matrices: Optional[List[Optional[np.ndarray]]] = None,
     group_labels: Optional[List] = None,
     verbose: bool = True,
+    size_weight: str = 'df',
 ) -> Tuple[List[int], Dict]:
     """Select groups via Group Lasso with BIC on the selection path.
 
     Sweeps gamma from gamma_max (where everything is zeroed out) down to
     gamma_max * gamma_ratio. At each gamma, computes BIC. Selects the
     gamma with minimum BIC.
+
+    The penalty is the size-calibrated Gram-weighted group lasso
+    ``γ Σ_g √df_g ||w_g||_G`` (Yuan & Lin). The ``√df_g`` weight is what makes
+    a single nominal ``γ`` comparable across first-order / pair / triple groups
+    whose cardinalities span two orders of magnitude — without it the sweep is
+    biased toward keeping the larger (higher-order) blocks active. See
+    :func:`hifi_anova.training.sparse.group_size_weights` for the derivation of
+    ``√df_g`` (vs ``√tr(G_g)``) under the Gram norm.
 
     Args:
         Phi: (N, F) feature matrix
@@ -349,19 +367,28 @@ def select_groups_glasso(
         gamma_ratio: ratio of smallest to largest gamma
         group_labels: optional labels for reporting
         verbose: print selection path
+        size_weight: per-group size calibration ('df'|'p'|'none'). Default 'df'
+            == √rank(G_g) (== √p_g for the full-rank blocks here).
 
     Returns:
         selected: list of selected group indices
         info: dict with full path, BIC values, etc.
     """
+    from .sparse import group_size_weights
+
     Phi = np.asarray(Phi, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     reg_l2 = np.asarray(reg_l2, dtype=np.float64)
     N, F = Phi.shape
     n_groups = len(group_slices)
 
-    # Compute gamma_max: the smallest gamma that zeros out everything
-    # At gamma_max, ||v_g||_G ≤ gamma for all g
+    # Per-group size weights √df_g (Yuan & Lin calibration across group sizes).
+    group_weights = group_size_weights(group_slices, gram_matrices,
+                                        mode=size_weight, n_features=F)
+
+    # Compute gamma_max: the smallest gamma that zeros out everything.
+    # At gamma_max, ||v_g||_G ≤ gamma·√df_g for all g, i.e.
+    # gamma ≥ ||v_g||_G / √df_g; so gamma_max = max_g ||v_g||_G / √df_g.
     # v_g = (Phi_g^T Phi_g + R_g)^{-1} Phi_g^T y (unconstrained OLS per group)
     gamma_max = 0.0
     for g_idx, sl in enumerate(group_slices):
@@ -370,7 +397,8 @@ def select_groups_glasso(
         A = Phi_g.T @ Phi_g + R_g
         v_g = np.linalg.solve(A, Phi_g.T @ y)
         G_g = gram_matrices[g_idx] if gram_matrices is not None else None
-        gamma_max = max(gamma_max, _gram_weighted_norm(v_g, G_g))
+        gamma_max = max(gamma_max,
+                        _gram_weighted_norm(v_g, G_g) / group_weights[g_idx])
 
     gamma_max *= 1.01  # small margin
     gamma_min = gamma_max * gamma_ratio
@@ -381,7 +409,8 @@ def select_groups_glasso(
     path = []
     for gamma in gammas:
         w = _group_lasso_solve(Phi, y, group_slices, reg_l2, gamma,
-                                gram_matrices=gram_matrices)
+                                gram_matrices=gram_matrices,
+                                group_weights=group_weights)
         bic, df, mse = _compute_group_bic(Phi, y, w, group_slices)
         active = [g for g in range(n_groups)
                   if np.linalg.norm(w[group_slices[g]]) > 1e-15]
@@ -478,15 +507,20 @@ def _kfold_cv_ridge(
         se_mse: standard error of the CV error
     """
     N = len(y)
-    rng = np.random.RandomState(seed)
-    perm = rng.permutation(N)
-    fold_size = N // n_folds
+    # Contiguous folds via the shared splitter; reconstruct the train fold in
+    # permutation order (concatenate around the val slice) to be byte-identical
+    # to the previous inline split. The folds are remainder-inclusive, so their
+    # sizes may differ by one — track the running block offset rather than
+    # assuming a uniform ``N // n_folds`` stride. See ridge.kfold_indices.
+    folds, perm = kfold_indices(N, n_folds, seed, scheme='contiguous',
+                                return_perm=True)
 
     mse_folds = []
-    for k in range(n_folds):
-        val_idx = perm[k * fold_size: (k + 1) * fold_size]
-        train_idx = np.concatenate([perm[:k * fold_size],
-                                     perm[(k + 1) * fold_size:]])
+    offset = 0
+    for val_idx in folds:
+        m = len(val_idx)
+        train_idx = np.concatenate([perm[:offset], perm[offset + m:]])
+        offset += m
 
         Phi_tr = Phi[train_idx]
         y_tr = y[train_idx]

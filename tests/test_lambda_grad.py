@@ -132,12 +132,24 @@ def test_multi_lambda_gradient_matches_fd(method):
 
 @pytest.mark.parametrize("method", ["gcv", "aic", "bic", "evidence"])
 def test_multi_lambda_analytic_matches_numeric(method):
-    """optimize_multi_lambda(grad='analytic') finds the same (l1,l2) as numeric."""
+    """optimize_multi_lambda(grad='analytic') finds the same (l1,l2) as numeric.
+
+    This compares the *converged optima* of two independent optimizer routes
+    (analytic vs finite-difference gradient), not the gradients themselves. On
+    AIC's comparatively flat criterion surface the two routes can land ~0.5-1%
+    apart, and under pytest-xdist the nondeterministic parallel BLAS reductions
+    nudge the [aic] case just past a tight tolerance (the documented xdist AIC
+    analytic-vs-finite-difference flake — it passes serially; observed overshoot
+    ~5.6e-3 vs the old 5e-3). The tolerance is 1e-2, which still confirms the two
+    routes agree to ~1% while tolerating that shallow-optimum wobble; the strict
+    *gradient* equality is pinned separately by test_multi_lambda_gradient_matches_fd
+    / test_jax_multi_lambda_grad_matches_analytic.
+    """
     Phi, y, D, K1, K2, P = _ishigami_two_order()
     rn = optimize_multi_lambda(Phi, y, D, K1, K2, P, 'variance', method, grad='numeric')
     ra = optimize_multi_lambda(Phi, y, D, K1, K2, P, 'variance', method, grad='analytic')
-    assert ra['lambda_order1'] == pytest.approx(rn['lambda_order1'], rel=5e-3, abs=1e-6)
-    assert ra['lambda_order2'] == pytest.approx(rn['lambda_order2'], rel=5e-3, abs=1e-6)
+    assert ra['lambda_order1'] == pytest.approx(rn['lambda_order1'], rel=1e-2, abs=1e-6)
+    assert ra['lambda_order2'] == pytest.approx(rn['lambda_order2'], rel=1e-2, abs=1e-6)
 
 
 def test_multi_lambda_grad_validation():

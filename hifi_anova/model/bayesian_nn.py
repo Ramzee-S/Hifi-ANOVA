@@ -129,7 +129,6 @@ class FourierPosterior:
         Returns:
             FourierPosterior instance
         """
-        F = Phi.shape[1]
         A = Phi.T @ Phi + np.diag(reg_diag)
         Sigma_w = np.linalg.inv(A)  # (F, F)
         return cls(Sigma_w=Sigma_w, sigma2=sigma2)

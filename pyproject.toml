@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hifi_anova"
-version = "0.1.0"
+# Single source of truth: hifi_anova.__version__ (read statically by setuptools
+# via [tool.setuptools.dynamic] below). Update the version in the package only.
+dynamic = ["version"]
 description = "HiFi-ANOVA (Hoeffding Interaction-Fidelity ANOVA): interpretable regression with analytic Sobol diagnostics for the conditional mean and variance."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -44,14 +46,36 @@ dependencies = [
 # Ground-truth Sobol comparison via Saltelli sampling (used by
 # examples/run_salib_comparison.py). Not required to use the library.
 salib = ["SALib>=1.4"]
+# Private local browser application. NiceGUI 3.0 introduced the FileUpload
+# byte API used by gui2; Plotly remains optional to the scientific package.
+gui2 = ["nicegui>=3.0", "plotly>=5.24"]
+# Browser capture/test adapter. It reuses a system Chrome/Chromium executable;
+# installing this extra does not download a browser binary.
+gui2-test = ["playwright>=1.40"]
+# HiFi Console (gui3, EXPERIMENTAL): a local FastAPI + WebSocket desk, run from a
+# source checkout via `python -m gui3.server`. uvicorn[standard] bundles the
+# WebSocket protocol the console's /ws endpoint needs. Not part of the
+# scientific package; the browser UI stays optional.
+gui3 = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
 # Development / testing.
 dev = [
     "pytest>=7.0",
+    "pytest-cov>=4.0",   # coverage measurement (report-only in CI for now)
+    "ruff>=0.6",         # linter (see [tool.ruff] policy below)
+    "mypy>=1.8",         # optional static type checking (lenient config)
+    "pre-commit>=3.5",   # local hook runner (.pre-commit-config.yaml)
+    "build>=1.0",        # `python -m build` wheel/sdist verification
+    "twine>=5.0",        # `twine check` packaging metadata validation
 ]
 
 [project.urls]
 Homepage = "https://github.com/Ramzee-S/Hifi-ANOVA"
 Repository = "https://github.com/Ramzee-S/Hifi-ANOVA"
+Documentation = "https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md"
+Changelog = "https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/CHANGELOG.md"
+
+[tool.setuptools.dynamic]
+version = { attr = "hifi_anova.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["hifi_anova*"]
@@ -64,4 +88,54 @@ filterwarnings = [
     # equinox static fields (kept out of the trainable-parameter set). See the
     # note in hifi_anova/__init__.py.
     "ignore:A JAX array is being set as static:UserWarning",
+]
+
+# ---------------------------------------------------------------------------
+# Code-quality tooling. The public CI and pre-commit hook both enforce the full
+# configured E4/E7/E9/F set, which the package tree passes clean. Nothing here
+# reformats or rewrites source; formatting remains a separate explicit choice.
+# See CONTRIBUTING.md ("Code-quality tooling") for the public policy.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py310"
+line-length = 79            # matches the existing hand-formatted PEP8 style
+extend-exclude = ["studies", "dev", "gui", "gui3", "examples", "docs"]
+
+[tool.ruff.lint]
+# This is the same rule set enforced by public CI and pre-commit.
+select = ["E4", "E7", "E9", "F"]
+# E501 (line length) intentionally NOT selected yet — a few lines run to ~86
+# cols; enforce only after a deliberate formatting pass.
+
+[tool.ruff.lint.per-file-ignores]
+# Package __init__.py files deliberately re-export their public API, and the top
+# package __init__ imports submodules *after* silencing one equinox warning
+# (the filter must run before equinox is imported), so E402 there is intentional.
+"__init__.py" = ["F401", "F403", "E402"]
+
+[tool.mypy]
+# Lenient by design: this is a numerics-heavy JAX/NumPy codebase with many
+# dynamically-shaped arrays, so full strictness is not the near-term goal.
+# Runs informationally (no CI gate) until annotations are filled in.
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = false
+check_untyped_defs = false
+files = ["hifi_anova"]
+
+[tool.coverage.run]
+source = ["hifi_anova"]
+branch = true
+omit = ["*/experiments/*", "*/baselines/*"]
+
+[tool.coverage.report]
+show_missing = true
+# No fail_under yet — measure first, then ratchet a threshold.
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
 ]

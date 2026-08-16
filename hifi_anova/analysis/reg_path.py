@@ -6,13 +6,12 @@ L-curve, Sobol path, and variance decomposition path plots.
 """
 
 import numpy as np
-import jax.numpy as jnp
+from ..array_backend import xp as jnp  # switchable array backend (numpy exact core)
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from ..core.gram import build_gram_matrix, build_gram_matrix_2d, build_gram_matrix_3d
-from ..core.features import build_first_order_features, build_second_order_features, basis_size
-from ..core.pairs import PairManager
+from ..core.features import basis_size
 from ..training.hyperopt import ridge_solve_with_diagnostics, RidgePathEigSolver
 from ..training.regularization import build_regularization_vector
 
@@ -202,7 +201,7 @@ def compute_reg_path(
     sobol_3rd = {}
     if K3 > 0 and triple_indices is not None:
         for t in range(T):
-            i, j, k = (int(triple_indices[t, l]) for l in range(3))
+            i, j, k = (int(triple_indices[t, pos]) for pos in range(3))
             sobol_3rd[(i, j, k)] = np.zeros(n_lambdas)
 
     for idx, lam1 in enumerate(lambdas):
@@ -259,7 +258,7 @@ def compute_reg_path(
             for t in range(T):
                 wt = w[F1 + F2 + t * block3: F1 + F2 + (t + 1) * block3]
                 var_t = max(0.0, float(wt @ G3 @ wt))
-                i, j, k = (int(triple_indices[t, l]) for l in range(3))
+                i, j, k = (int(triple_indices[t, pos]) for pos in range(3))
                 sobol_3rd[(i, j, k)][idx] = var_t
                 var_o3 += var_t
         var_order3_vals[idx] = var_o3
@@ -357,7 +356,7 @@ def plot_reg_path(path: RegPathResult,
     ax2.set_ylabel('Log Evidence', color='r')
     ax.set_title('Model Selection Criteria')
     lines = l1 + l2
-    ax.legend(lines, [l.get_label() for l in lines])
+    ax.legend(lines, [line.get_label() for line in lines])
     ax.grid(True, alpha=0.3)
 
     # --- Plot 3: Sobol index paths ---
@@ -580,7 +579,7 @@ def plot_variance_reg_path(result: Dict,
         ax.axvline(lambda_h_used, color='gray', linestyle='--', alpha=0.6,
                    label=r'$\lambda_h$ used')
     ax.set_xlabel(r'$\lambda_h$')
-    ax.set_ylabel('Variance Sobol  $S_i^h$')
+    ax.set_ylabel('Log-variance index  $S_i^h$')
     ax.set_title('Variance-model Sobol paths')
     ax.set_ylim(0, 1.02)
     ax.legend(loc='center left', fontsize=8)
