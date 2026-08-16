@@ -196,6 +196,10 @@ health check.
 
 ### HiFi Console — interactive browser desk (gui3, experimental)
 
+![The HiFi Console — a heteroscedastic airfoil self-noise fit: per-variable
+mean/interaction channels, the Sobol spectrum, second-order routing, the layered
+parity view, and the COMPLEMENT bus.](docs/figures/GuiScreenshotv0p3p0.png)
+
 A local FastAPI + WebSocket application for interactive fitting and diagnostics:
 live effect faders and per-effect mutes, the SCAN/ROUTE second-order workflow, a
 layered parity view (peel the fit by interaction order), the COMPLEMENT bus
@@ -215,9 +219,9 @@ interactions, the monitor scopes, the parity ladder, the COMPLEMENT bus, and the
 honesty lamps.
 
 **Experimental / pre-alpha UI** — a **partial** interface: many of the core
-workflows above are wired, others are still stubs, and it is under active
-development (a screenshot may be added later). The console is a front-end over
-the same public library (nothing it shows is a blessed model selection), and it
+workflows above are wired (as shown), others are still stubs, and it is under
+active development. The console is a front-end over the same public library
+(nothing it shows is a blessed model selection), and it
 ships as source in the alpha, not in the installed wheel.
 
 ---
