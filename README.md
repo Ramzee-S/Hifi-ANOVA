@@ -4,14 +4,17 @@
 
 *HiFi-ANOVA — Hoeffding Interaction and Fidelity Identification ANOVA.*
 
-A framework for **interpretable regression** surrogate ML models. The framework
-has functionality that enables decomposition of both the conditional **mean** and
+A framework for interpretable surrogate ML models. The framework
+has functionalities that enable decomposition of both the conditional **mean** and
 the conditional **variance** of a response by interaction order, variable, and
 frequency content, using basis functions that satisfy the Hoeffding (ANOVA) side
-conditions. Sensitivity indices are read directly off the fitted coefficients.
-This enables the formulation of models that are interpretable *by design*, not
+conditions. In contrast to black-box surrogate models, this work aims to enable 
+the formulation of models that are fully or partially interpretable *by design*, not
 explained post-hoc. Fourier, Legendre, and Haar bases can be used for first-order
-and second-order terms. An experimental GUI is available. 
+and second-order terms. Sobol sensitivity indices and other variance decomposition methods can be used to 
+quantitatively express the importance of all first and second-order interactions, as well as the variance contribution of different fidelity orders (such as polynomial terms, or Fourier frequencies. Parsimonious models can be obtained by the use of various regularization techniques for variable selection and smoothing. 
+An experimental GUI is available to interactively visualize various model aspects during model building. 
+
 
 📖 **Full option and API reference:** [`docs/USER_GUIDE.md`](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md).
 
@@ -22,12 +25,12 @@ Sobol spectrum, regularization trade-offs, fit-under-noise diagnostics). A
 standalone [HTML version](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/ishigami_showcase.html) is also included.
 
 > **Status: preliminary, work-in-progress release.** The library is usable and
-> broadly tested, but the API may change before a 1.0. Extracted and
+> tested, but the API may change before a 1.0. Extracted and
 > sanitized from a research codebase; the manuscript / theory write-up and the
 > interactive GUI are not included here and may be added later.
 >
 > **Source-available (PolyForm Internal Use 1.0.0), not open-source** — use is
-> limited to your and your company's internal business operations; no
+> limited to your and your company's internal business operations; but no
 > distribution to third parties. See [License](#license).
 
 ---
@@ -299,31 +302,6 @@ path = compute_reg_path(Phi, y_centered, D=10, K1=10, K2=5, P=45,
 plot_reg_path(path, save_prefix='figures/my_analysis')
 ```
 
-### Heteroscedastic model — dual Sobol spectrum
-
-```python
-config = {'K1': 10, 'K2': 5, 'Kh': 3, 'strategy': 'variance',
-          'lambda_order1': 0.001, 'lambda_order2': 0.01, 'lambda_h': 0.1,
-          'stages': ['A', 'B', 'D'], 'max_outer_iter': 10}
-
-model, results = HiFiANOVATrainer(config).fit(...)
-sobol = compute_sobol_indices(model, data['x_test'])
-print(sobol['mean_sobol']['first_order'])       # drives E[y|x]
-print(sobol['log_variance_sobol']['first_order'])  # log-variance index S^h
-```
-
-`variance_sobol` remains a one-release deprecated read alias for the exact same
-log-scale block; it is not natural-scale variance attribution.
-
-Stage D is **stable and safe by default**: the alternating loop feeds the
-variance fit leverage-corrected residuals and keeps the best iterate by
-held-out likelihood (`leverage_correction`, `alternating_early_stop`), and it
-keeps the variance model only if it beats a leverage-corrected constant
-variance on held-out likelihood — otherwise it reverts with a warning (so
-heteroscedastic fitting on homogeneous-noise data can't silently corrupt the
-mean). The one-call `hifi_anova(..., heteroscedastic=True)` also selects
-`strategy='curvature'` automatically. Tune/disable via `heteroscedastic_guard`,
-`min_noise_ratio`, `variance_selection_margin`. See USER_GUIDE §4.8.
 
 ### Linear residuals (RBF / RFF / Nyström) — preserve the analytic framework
 
@@ -338,52 +316,6 @@ the residual. An SGD-trained NN residual is also available (`type: 'nn'`) as a
 last resort; use `hifi_anova.training.redecompose.redecompose` to recover clean Sobol
 indices afterward.
 
-### Removing spurious main effects — `first_order_pruning`
-
-```python
-config['first_order_pruning'] = 'bic'   # 'bic' | 'group_lasso' | '1se' | 'none'
-```
-
-Zeros the entire first-order block of any variable whose marginal effect the
-criterion rejects — the group-sparse step plain ridge cannot do. This cleanly
-removes a *pure-interaction* variable's spurious main effect (e.g. Ishigami x3),
-robustly down to N≈100, without disturbing the interactions (they are
-Hoeffding-orthogonal). See [USER_GUIDE §4.6](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md).
-
-### User-defined equation systems (term structure)
-
-When you want to **assert** an exact term structure instead of discovering one,
-the public API accepts it directly — all additive and inert by default:
-
-```python
-# Per-pair second-order orders: keep only (0,1) and (2,3), at orders 4 and 2.
-res = hifi_anova(X, y, K1=6, K2={(0, 1): 4, (2, 3): 2})
-
-# Order-selective membership: x2 enters PAIRS ONLY (no first-order block).
-# Non-hierarchical — asserted, and flagged as such in the output.
-res = hifi_anova(X, y, K1=6, K2=4, variable_orders={2: [2]})
-
-# Variance model over a named subset; the rest are sigma^2(x)-flat BY ASSERTION.
-res = hifi_anova(X, y, K1=6, heteroscedastic=True, mode='heteroscedastic',
-                 variance_variables=[0, 2], K2h=2)
-```
-
-- `K2={(i, j): K2_ij}` pins the exact retained pairs with per-pair orders
-  (ragged blocks end-to-end); it rejects data-driven selection/pruning, `K3`,
-  mixed bases, and `mode='auto'`.
-- `variable_orders={j: [orders]}` (⊆ `{1, 2}`): `[2]` = pair-only
-  (**non-hierarchical**), `[1]` = drop pairs touching `j`.
-- `variance_variables=[...]` restricts the Stage-D variance model to a subset;
-  excluded variables are **homoscedasticity-asserted** (`Sʰ ≡ 0`). Composes
-  with public `K2h > 0` and an explicit `var_pair_selection=[(i, j), …]` list.
-
-The honesty labels (non-hierarchical; homoscedasticity-asserted) are surfaced in
-`summary()` and `results['term_structure']`. Data-driven selectors for these
-remain expert-gated. See [USER_GUIDE §4.9](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md).
-
-For the full option set, see the docstrings in `hifi_anova/api.py`,
-`hifi_anova/training/trainer.py`, and `hifi_anova/analysis/sobol.py`, and the
-[User Guide](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md).
 
 ---
 
@@ -444,13 +376,7 @@ hifi_anova/
   GCV-optimal ridge biases them slightly downward. The separate experimental
   Sobol-estimation mode tunes an additivity criterion; it does not guarantee
   unbiased recovery.
-- **This is not primarily a top-tier predictor** — it trades a little predictive
-  accuracy for interpretability and analytic sensitivity analysis.
-- **Penalty strategy affects attributions.** Different smoothness-penalty
-  strategies can leave predictive accuracy essentially unchanged while shifting
-  individual Sobol attributions substantially — a small-scale instance of the
-  general non-uniqueness of variable importance across near-equivalent models.
-  Report the penalty strategy alongside the indices.
+
 
 ## Relationship to prior work
 
