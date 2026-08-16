@@ -214,15 +214,11 @@ python -m gui3.server             # then open http://127.0.0.1:8630
 interactions, the monitor scopes, the parity ladder, the COMPLEMENT bus, and the
 honesty lamps.
 
-🖥️ **Non-functional UI preview:**
-[rendered console layout](https://htmlpreview.github.io/?https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/gui3/console.html)
-— a static render of the desk that shows the **layout only**. With no local
-backend it cannot load data, fit, or plot; run the server (above) for the
-working console.
-
-**Experimental / pre-alpha UI** — under active development; the console is a
-front-end over the same public library (nothing it shows is a blessed model
-selection). It ships as source in the alpha, not in the installed wheel.
+**Experimental / pre-alpha UI** — a **partial** interface: many of the core
+workflows above are wired, others are still stubs, and it is under active
+development (a screenshot may be added later). The console is a front-end over
+the same public library (nothing it shows is a blessed model selection), and it
+ships as source in the alpha, not in the installed wheel.
 
 ---
 
@@ -394,41 +390,9 @@ The honesty labels (non-hierarchical; homoscedasticity-asserted) are surfaced in
 `summary()` and `results['term_structure']`. Data-driven selectors for these
 remain expert-gated. See [USER_GUIDE §4.9](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md).
 
-### Model verification — one-call health check
-
-```python
-from hifi_anova.analysis.diagnostics import verify_model
-report = verify_model(model, x_test, y_test, x_train=x_train)  # report['all_pass']
-```
-
-Runs the diagnostic workflow end-to-end (Sobol additivity, index bounds, R²,
-calibration coverage, input-correlation level) and returns a pass/warn/fail
-report, confirming a fit is internally consistent before its Sobol indices are
-trusted. See [USER_GUIDE §10.6](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md).
-
-See the docstrings in `hifi_anova/api.py`, `hifi_anova/training/trainer.py`, and
-`hifi_anova/analysis/sobol.py` for the full option set.
-
----
-
-## Benchmark — bring your own model
-
-`benchmarks/` ships a fixed heteroscedastic-Ishigami dataset (`train.csv` /
-`test.csv` / `test_truth.csv`) and a comparison harness. Fit anything on the
-train split, predict the test inputs, and score it:
-
-```python
-from benchmarks.run_benchmark import evaluate_predictions
-evaluate_predictions(y_pred, sigma_pred=None, name='my_model')
-```
-
-It reports R² vs observed **and** vs the noiseless truth (honest generalization),
-NLL/coverage, and first-order Sobol MAE vs the analytic indices.
-`python benchmarks/run_benchmark.py --baselines` compares HiFi-ANOVA to sklearn
-baselines — the tree ensembles overfit the noise (large train→test gap) while
-HiFi-ANOVA generalizes competitively and is the only entrant with native,
-accurate Sobol indices and a calibrated input-dependent variance. See
-[`benchmarks/README.md`](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/benchmarks/README.md).
+For the full option set, see the docstrings in `hifi_anova/api.py`,
+`hifi_anova/training/trainer.py`, and `hifi_anova/analysis/sobol.py`, and the
+[User Guide](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md).
 
 ---
 
