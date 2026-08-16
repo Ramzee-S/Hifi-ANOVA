@@ -2,15 +2,15 @@
 
 **Interpretable Regression with Analytic Sobol Diagnostics for Mean and Variance**
 
-*HiFi-ANOVA — Hoeffding Interaction–Fidelity ANOVA.*
+*HiFi-ANOVA — Hoeffding Interaction and Fidelity Identification ANOVA.*
 
-A framework for **interpretable regression** that decomposes both the conditional
+A framework for **interpretable regression** surrogate ML models. 
+The framework has functionality that enables decomposition of both the conditional
 **mean** and the conditional **variance** of a response by interaction order,
 variable, and frequency content, using basis functions that satisfy the
 Hoeffding (ANOVA) side conditions. Sensitivity indices are read directly off the
-fitted coefficients — the model is interpretable *by design*, not explained
-post-hoc. The structured basis is not restricted to one family: Fourier,
-Legendre, and Haar bases can be mixed per variable.
+fitted coefficients. This should enable the creation of models that are interpretable *by design*, not explained
+post-hoc. Fourier, Legendre, and Haar bases can be used for first-order and second-order terms.
 
 📖 **Full option and API reference:** [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md).
 
