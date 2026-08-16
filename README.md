@@ -9,9 +9,9 @@ has functionality that enables decomposition of both the conditional **mean** an
 the conditional **variance** of a response by interaction order, variable, and
 frequency content, using basis functions that satisfy the Hoeffding (ANOVA) side
 conditions. Sensitivity indices are read directly off the fitted coefficients.
-This should enable the creation of models that are interpretable *by design*, not
+This enables the formulation of models that are interpretable *by design*, not
 explained post-hoc. Fourier, Legendre, and Haar bases can be used for first-order
-and second-order terms.
+and second-order terms. An experimental GUI is available. 
 
 📖 **Full option and API reference:** [`docs/USER_GUIDE.md`](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md).
 
@@ -25,19 +25,6 @@ standalone [HTML version](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/
 > broadly tested, but the API may change before a 1.0. Extracted and
 > sanitized from a research codebase; the manuscript / theory write-up and the
 > interactive GUI are not included here and may be added later.
->
-> **Implemented scope vs manuscript program (0.3.0).** This release implements
-> the v07 model geometry and fixed-configuration diagnostics. It does **not**
-> expose the manuscript's reusable FDR-controlled efficient-score ladder, its
-> honest three-way selection/inference/reporting workflow, or post-selection
-> coverage guarantees. BIC, group lasso, the 1-SE rule, pruning, and residual-
-> sieve thresholds are model-selection heuristics, not Theorem-2 tests.
->
-> **Mixed-basis boundary.** Per-variable Fourier/Legendre/Haar assignments are
-> currently supported for the Stage-A/B **mean** model with all pairs and
-> block-correct Sobol diagnostics. Mixed selection/pruning, residuals, Stage-D
-> variance, and third order are deferred and raise rather than silently no-op.
-> The uniform-basis path provides the complete mean/variance and selection stack.
 >
 > **Source-available (PolyForm Internal Use 1.0.0), not open-source** — use is
 > limited to your and your company's internal business operations; no
