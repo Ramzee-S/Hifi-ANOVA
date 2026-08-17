@@ -8,12 +8,12 @@ A framework for interpretable surrogate ML models. The framework
 has functionalities that enable decomposition of both the conditional **mean** and
 the conditional **variance** of a response by interaction order, variable, and
 frequency content, using basis functions that satisfy the Hoeffding (ANOVA) side
-conditions. In contrast to black-box surrogate models, this work aims to enable 
+conditions. In contrast to black-box surrogate models, this work aims to enable
 the formulation of models that are fully or partially interpretable *by design*, not
 explained post-hoc. Fourier, Legendre, and Haar bases can be used for first-order
-and second-order terms. Sobol sensitivity indices and other variance decomposition methods can be used to 
-quantitatively express the importance of all first and second-order interactions, as well as the variance contribution of different fidelity orders (such as polynomial terms, or Fourier frequencies. Parsimonious models can be obtained by the use of various regularization techniques for variable selection and smoothing. 
-An experimental GUI is available to interactively visualize various model aspects during model building. 
+and second-order terms. Sobol sensitivity indices and other variance decomposition methods can be used to
+quantitatively express the importance of all first and second-order interactions, as well as the variance contribution of different fidelity orders (such as polynomial terms, or Fourier frequencies). Parsimonious models can be obtained by the use of various regularization techniques for variable selection and smoothing.
+An experimental GUI is available to interactively visualize various model aspects during model building.
 
 
 📖 **Full option and API reference:** [`docs/USER_GUIDE.md`](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md).

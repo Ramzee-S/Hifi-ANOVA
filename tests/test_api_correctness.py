@@ -153,7 +153,11 @@ def test_preprocess_rejects_invalid_inputs(bad):
 
 def test_package_version_is_single_sourced():
     """pyproject must not carry a version literal that can drift from __init__."""
-    import tomllib
+    try:
+        import tomllib  # Python 3.11+ stdlib
+    except ModuleNotFoundError:  # Python 3.10 (a supported version) has no tomllib
+        tomllib = pytest.importorskip(
+            "tomli", reason="need tomllib (py311+) or tomli to parse pyproject")
     from pathlib import Path
     import hifi_anova
 
