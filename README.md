@@ -15,23 +15,30 @@ and second-order terms. Sobol sensitivity indices and other variance decompositi
 quantitatively express the importance of all first and second-order interactions, as well as the variance contribution of different fidelity orders (such as polynomial terms, or Fourier frequencies). Parsimonious models can be obtained by the use of various regularization techniques for variable selection and smoothing.
 An experimental GUI is available to interactively visualize various model aspects during model building.
 
+> **Status: preliminary, work-in-progress release.** The library is usable and
+> tested, but the API may change before a 1.0. The current state is extracted and
+> sanitized from a research codebase; the manuscript / theory write-up and the
+> interactive GUI are not included here and may be added later.
+>
+> **Source-available (PolyForm Internal Use 1.0.0), not open-source** — use is
+> limited to your and your company's internal business operations. You can download, use, and modify the code but no
+> distribution to third parties. See [License](#license).
 
-📖 **Full option and API reference:** [`docs/USER_GUIDE.md`](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md).
+**Full option and API reference:** [`docs/USER_GUIDE.md`](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/USER_GUIDE.md).
 
-🖼️ **Worked example with figures:** [`docs/ishigami_showcase.md`](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/ishigami_showcase.md)
+**Worked example with figures:** [`docs/ishigami_showcase.md`](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/ishigami_showcase.md)
 — a visual tour of the toolbox on a heteroscedastic Ishigami fit (dual mean +
 log-variance
 Sobol spectrum, regularization trade-offs, fit-under-noise diagnostics). A
 standalone [HTML version](https://github.com/Ramzee-S/Hifi-ANOVA/blob/main/docs/ishigami_showcase.html) is also included.
 
-> **Status: preliminary, work-in-progress release.** The library is usable and
-> tested, but the API may change before a 1.0. Extracted and
-> sanitized from a research codebase; the manuscript / theory write-up and the
-> interactive GUI are not included here and may be added later.
->
-> **Source-available (PolyForm Internal Use 1.0.0), not open-source** — use is
-> limited to your and your company's internal business operations; but no
-> distribution to third parties. See [License](#license).
+**A Graphical User Interface:** 
+![The HiFi Console — a heteroscedastic airfoil self-noise fit: per-variable
+mean/interaction channels, the Sobol spectrum, second-order routing, the layered
+parity view, and the COMPLEMENT bus.](docs/figures/GuiScreenshotv0p3p0.png)
+
+
+
 
 ---
 
